@@ -1,0 +1,84 @@
+Bootstrap: library
+From: airl_lab/default/airl_env:qdax_f57720d0
+
+%labels
+    Author manon.flageat18@imperial.ac.uk
+    Version v0.0.1
+
+%environment
+   export PYTHONPATH=$PYTHONPATH:/workspace/lib/python3.8/site-packages/
+   export LD_LIBRARY_PATH="/workspace/lib:$LD_LIBRARY_PATH"
+   export PATH=$PATH:/usr/local/go/bin
+
+%post
+   export LD_LIBRARY_PATH="/workspace/lib:$LD_LIBRARY_PATH"
+   export MPLCONFIGDIR="/configs/"
+   apt-get update -y
+   pip3 install --upgrade pip
+
+   # Install required libraries
+   pip3 install natsort==8.2.0 typing-extensions==4.3.0
+   pip install jaxlib==0.3.15+cuda11_cudnn82 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+   pip3 install jax==0.3.17 flax==0.6.0 brax==0.0.15 chex==0.1.4
+
+   # QDax
+   pip3 install qdax==0.2.1
+
+   # Create working directory
+   mkdir -p /git/exp/uqd/
+
+   #==================================================================================
+   exit 0 #NOTFORFINAL - the lines below this "exit" will be executed only when building the final image
+   #==================================================================================
+
+   # Enter working directory
+   cd /git/exp/
+   git clone https://gitlab.doc.ic.ac.uk/AIRL/research_projects/manon_flageat/uqd.git
+
+%runscript
+
+    # Create results folders
+    echo
+    echo "Entering directory /git/exp/uqd"
+    CURPATH=$(pwd)
+    cd /git/exp/uqd
+
+    echo
+    echo "Creating result directory $CURPATH/$DIRNAME/"
+    DIRNAME=results_$1
+    mkdir -p $CURPATH/$DIRNAME/
+
+    if [ ! -z "${PBS_ARRAY_INDEX}" ]
+      then
+        tmp_dir=$CURPATH/$DIRNAME/$DIRNAME.${PBS_ARRAY_INDEX}
+    else
+      PATHNAME=$(date +%Y-%m-%d_%H_%M_%S)_$$
+      tmp_dir=$(mktemp -d -p $CURPATH/$DIRNAME/ $PATHNAME.XXX)
+    fi
+    mkdir -p $tmp_dir
+    echo
+    echo "Created $tmp_dir"
+
+    # Read number of replications
+    REPLICATIONS=$2
+    echo
+    echo "Replicating run $REPLICATIONS times"
+
+    shift
+    shift
+
+    # Run experiments
+    for RUN in $(seq 1 $REPLICATIONS)
+    do
+        echo
+        echo "Running python3 main.py --results $tmp_dir $@"
+        python3 main.py --results $tmp_dir "$@"
+    done
+
+    # Run analysis
+    echo "Running python3 main_num_reevals_tunning.py --results $PATH_ANALYSIS --plots $PATH_ANALYSIS --min-replications 64 --max-replications 16384 "$@""
+    python3 main_num_reevals_tunning.py --results $PATH_ANALYSIS --plots $PATH_ANALYSIS --min-replications 64 --max-replications 16384 "$@"
+
+
+%help
+    This container allows to run QDax implementation of Uncertain Quality-Diversity.
