@@ -14,3 +14,4 @@ scipy==1.8.0
 seaborn==0.11.2
 tensorflow-probability==0.15.0
 typing-extensions==4.3.0
+hydra-core==1.1.2
