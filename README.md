@@ -52,6 +52,14 @@ For example, to run it for `1000` generations on the `ant_omni` task, with sampl
 python3 main.py --container Archive-Sampling --emitter Mixing --num-iterations 1000 --sampling-size 4096 --env-name ant_omni
 ```
 
+To run only the benchmark task example from [Benchmark tasks for Quality-Diversity applied to Uncertain domains](https://arxiv.org/abs/2304.12454), you can use directly the correpsonding main file:
+
+```
+python3 main_uqd_benchmark_task.py alg_name=me noise_type=gaussian_fit
+```
+
+alg_name allows to specify the algorithm to run and noise_type the type of noise from the Benchmark paper.
+
 ## Using the singularity containers
 
 This repository also contains the recipe to build a singularity container with all the required libraries.

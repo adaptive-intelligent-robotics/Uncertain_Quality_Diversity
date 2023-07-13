@@ -1,0 +1,68 @@
+hydra:
+    run:
+        dir: ./${alg_name}_results/${env_name}-${noise_type}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    sweep:
+      dir: results/
+      subdir: ./${alg_name}_results/${env_name}-${noise_type}/${now:%Y-%m-%d}/${now:%H-%M-%S}_seed-${seed}
+
+
+
+# Env config
+alg_name: me
+seed: 0
+env_name: arm
+episode_length: 250
+policy_hidden_layer_sizes: [64, 64]
+arm_dofs: 8
+
+# ME config
+num_evaluations: 0
+num_iterations: 2000
+batch_size: 128
+fixed_init_state: True
+discard_dead: False
+
+#Emitter config
+iso_sigma: 0.01
+line_sigma: 0.1
+crossover_percentage: 1.0
+
+# Grid config
+grid_shape: [100, 100]
+
+# Log config
+log_period: 1
+store_repertoire: True
+store_repertoire_log_period: 100
+
+# Noise config
+noise_type: gaussian_fit
+
+# Gaussian noise config
+fit_variance: 0.1
+desc_variance: 0.03
+num_reevals: 512
+use_median: True
+log_period_reevals: 100
+
+# Multi-modal fitness noise config
+proba_mode_1_fit: 0.85
+fit_variance_1: 0.01
+fit_variance_2: 0.01
+mean_fitness_2: -1
+
+# Multi-modal desc noise config
+proba_mode_1_desc: 0.85
+desc_variances_1: [0.01, 0.01]
+desc_variances_2: [0.01, 0.01]
+mean_desc_2: [1.0, 1.0]
+
+# Selected Params noise config
+params_variance: 0.1
+selected_indexes_noise: [6]
+
+# Variance-proportional Gaussian noise
+prop_factors: [0.1, 0.1]
+
+# Naive sampling config
+num_samples: 30
