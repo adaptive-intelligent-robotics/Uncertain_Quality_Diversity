@@ -1,7 +1,7 @@
-This repository contains the code for the paper introducing the Uncertain Quality-Diversity (UQD) framework. 
-It builds on top of the [QDax library](https://github.com/adaptive-intelligent-robotics/QDax), following its structure and defining new classes from the existing QDax classes.
+This repository contains the code for the paper [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985), introducing the Uncertain Quality-Diversity (UQD) framework, as well as the paper [Benchmark tasks for Quality-Diversity applied to Uncertain domains](https://arxiv.org/abs/2304.12454), introducing benchmark tasks for UQD. 
 
-In particular, this repository provides the QDax code for:
+This repository builds on top of the [QDax library](https://github.com/adaptive-intelligent-robotics/QDax), following its structure and defining new classes from the existing QDax classes.
+In particular, it provides the QDax code for:
 - The following UQD algorithms:
 	- MAP-Elites-sampling
 	- MAP-Elites with a depth
@@ -13,6 +13,7 @@ In particular, this repository provides the QDax code for:
 	- reevaluation of the archive, either using the average or the median, giving back Corrected repertoire and Variance repertoire
 	- reevaluation of the archive in the specific case of Deep-Grid using in-cell selector, either using the average or the median, giving back Corrected repertoire and Variance repertoire
 - The following tasks that are not provided in the original QDax library:
+	- The [UQD Benchmark tasks](https://arxiv.org/abs/2304.12454) based on the arm tasks
 	- Noisy Rastrigin and noisy Sphere, adding Gaussian noise on the fitness and descriptor
 	- Hexapod Omni with reward from [this paper](https://direct.mit.edu/evco/article/24/1/59/1004?casa_token=bZvw7OK9LDoAAAAA:sAvo7rRM3pCk3he3ZW_v_KSPQ44ESToFbDm0-A_s179y8o6RfowglpsTnQDJwlXlOjKIke3o) controlled using open-loop controllers as described in the paper
 	- Hexapod Omni with reward from [this paper](https://direct.mit.edu/evco/article/24/1/59/1004?casa_token=bZvw7OK9LDoAAAAA:sAvo7rRM3pCk3he3ZW_v_KSPQ44ESToFbDm0-A_s179y8o6RfowglpsTnQDJwlXlOjKIke3o) controlled using closed-loop NN policies
@@ -26,7 +27,7 @@ This repository builds on QDax and follows the same structure:
 	- `core` itself also contains the two files defining the reevaluation mechanisms described above
 	- `core/containers` defines the necessary containers for the UQD algorithms, in particular, the Depth container
 	- `core/emitter` defines the necessary emitters
-- `tasks` contains the definition of the additional tasks
+- `tasks` contains the definition of the additional tasks, in particular uqd_benchmark.py contains the definition of the UQD Benchmark tasks proposed in [Benchmark tasks for Quality-Diversity applied to Uncertain domains](https://arxiv.org/abs/2304.12454)
 - `analysis` contains the files necessary to plot the graphs used in the paper
 - `singularity` contains all the files necessary to build and execute a singularity container to reproduce the paper results.
 
