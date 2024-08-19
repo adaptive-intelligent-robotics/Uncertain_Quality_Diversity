@@ -1,53 +1,28 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Callable, Tuple
 
-import flax
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
 
 from qdax.core.containers.mapelites_repertoire import get_cells_indices
-from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype, RNGKey
+from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype
 
+from core.containers.depth_repertoire import DeepMapElitesRepertoire
 
-class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
+class EvaluationsDeepMapElitesRepertoire(DeepMapElitesRepertoire):
     """
-    Class for the deep repertoire in Map Elites.
+    Class for the deep repertoire in Map Elites storing evaluations.
 
     Args:
-        genotypes: a PyTree containing the genotypes of the best solutions ordered
-            by the centroids. Each leaf has a shape (num_centroids, num_features). The
-            PyTree can be a simple Jax array or a more complex nested structure such
-            as to represent parameters of neural network in Flax.
-        genotypes_depth: a PyTree containing all the genotypes ordered by the centroids.
-            Each leaf has a shape (num_centroids, depth, num_features). The PyTree
-            can be a simple Jax array or a more complex nested structure such as to
-            represent parameters of neural network in Flax.
-        fitnesses: an array that contains the fitness of best solutions in each cell of
-            the repertoire, ordered by centroids. The array shape is (num_centroids,).
-        fitnesses_depth: an array that contains the fitness of all solutions in each
-            cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids, depth).
-        descriptors: an array that contains the descriptors of best solutions in each
-            cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids, num_descriptors).
-        descriptors_depth: an array that contains the descriptors of all solutions in
-            each cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids, depth, num_descriptors).
-        centroids: an array the contains the centroids of the tesselation. The array
-            shape is (num_centroids, num_descriptors).
+        evaluations_depth: an array that contains the number of evaluations of
+            individuals in the grid.
+        total_evaluations: the total number of evaluations spent.
     """
 
-    genotypes: Genotype
-    genotypes_depth: Genotype
-    fitnesses: Fitness
-    fitnesses_depth: Fitness
-    descriptors: Descriptor
-    descriptors_depth: Descriptor
-    centroids: Centroid
-    dims: jnp.ndarray
+    evaluations_depth: jnp.ndarray
+    total_evaluations: int
 
     def save(self, path: str = "./") -> None:
         """Saves the grid on disk in the form of .npy files.
@@ -75,13 +50,15 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         jnp.save(path + "fitnesses_depth.npy", self.fitnesses_depth)
         jnp.save(path + "descriptors.npy", self.descriptors)
         jnp.save(path + "descriptors_depth.npy", self.descriptors_depth)
+        jnp.save(path + "evaluations_depth.npy", self.evaluations_depth)
+        jnp.save(path + "total_evaluations.npy", self.total_evaluations)
         jnp.save(path + "centroids.npy", self.centroids)
         jnp.save(path + "dims.npy", self.dims)
 
     @classmethod
     def load(
         cls, reconstruction_fn: Callable, path: str = "./"
-    ) -> DeepMapElitesRepertoire:
+    ) -> EvaluationsDeepMapElitesRepertoire:
         """Loads a MAP Elites Grid.
 
         Args:
@@ -102,76 +79,30 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         fitnesses_depth = jnp.load(path + "fitnesses_depth.npy")
         descriptors = jnp.load(path + "descriptors.npy")
         descriptors_depth = jnp.load(path + "descriptors_depth.npy")
+        evaluations_depth = jnp.load(path + "evaluations_depth.npy")
+        total_evaluations = jnp.load(path + "total_evaluations.npy")
         centroids = jnp.load(path + "centroids.npy")
         dims = jnp.load(path + "dims.npy")
 
-        return DeepMapElitesRepertoire(
+        return EvaluationsDeepMapElitesRepertoire(
             genotypes=genotypes,
             genotypes_depth=genotypes_depth,
             fitnesses=fitnesses,
             fitnesses_depth=fitnesses_depth,
             descriptors=descriptors,
             descriptors_depth=descriptors_depth,
+            evaluations_depth=evaluations_depth,
+            total_evaluations=total_evaluations,
             centroids=centroids,
             dims=dims,
         )
 
-    @partial(jax.jit, static_argnames=("num_samples",))
-    def sample(self, random_key: RNGKey, num_samples: int) -> Tuple[Genotype, RNGKey]:
-        """
-        Sample elements in the grid. Sample only from the best individuals ("first
-        layer of the depth") contained in genotypes, fitnesses and descriptors.
-
-        Args:
-            random_key: a jax PRNG random key
-            num_samples: the number of elements to be sampled
-
-        Returns:
-            samples: a batch of genotypes sampled in the repertoire
-            random_key: an updated jax PRNG random key
-        """
-
-        random_key, sub_key = jax.random.split(random_key)
-        grid_empty = self.fitnesses == -jnp.inf
-        p = (1.0 - grid_empty) / jnp.sum(1.0 - grid_empty)
-
-        samples = jax.tree_map(
-            lambda x: jax.random.choice(sub_key, x, shape=(num_samples,), p=p),
-            self.genotypes,
-        )
-
-        return samples, random_key
-
-    @partial(jax.jit, static_argnames=("num_samples",))
-    def sample_with_descs(
-        self, random_key: RNGKey, num_samples: int
-    ) -> Tuple[Genotype, Descriptor, RNGKey]:
-        """Sample elements in the repertoire and return both their
-        genotypes, descriptors and fitnesses.
-
-        Args:
-            random_key: a jax PRNG random key
-            num_samples: the number of elements to be sampled
-
-        Returns:
-            samples: a batch of genotypes sampled in the repertoire
-            descriptors: the corresponding descriptors
-            random_key: an updated jax PRNG random key
-        """
-
-        repertoire_empty = self.fitnesses == -jnp.inf
-        p = (1.0 - repertoire_empty) / jnp.sum(1.0 - repertoire_empty)
-
-        random_key, subkey = jax.random.split(random_key)
-        samples = jax.tree_util.tree_map(
-            lambda x: jax.random.choice(subkey, x, shape=(num_samples,), p=p),
-            self.genotypes,
-        )
-        descriptors = jax.random.choice(
-            subkey, self.descriptors, shape=(num_samples,), p=p
-        )
-
-        return samples, descriptors, random_key
+    @jax.jit
+    def set_total_evaluations(
+        self, total_evaluations: int
+    ) -> EvaluationsDeepMapElitesRepertoire:
+        """Set up current number of evaluations."""
+        return self.replace(total_evaluations=total_evaluations)  # type: ignore
 
     @jax.jit
     def add(
@@ -180,7 +111,7 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         batch_of_descriptors: Descriptor,
         batch_of_fitnesses: Fitness,
         batch_of_extra_scores: ExtraScores,
-    ) -> DeepMapElitesRepertoire:
+    ) -> EvaluationsDeepMapElitesRepertoire:
         """
         Add a batch of elements to the repertoire.
 
@@ -214,13 +145,19 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             out_of_bound,
         )
 
+        # Get evaluations
+        batch_of_evaluations = batch_of_extra_scores["num_evaluations"]
+
         @jax.jit
         def _add_per_cell(
             cell_idx: jnp.ndarray,
             cell_genotype_depth: Genotype,
             cell_fitnesses_depth: Fitness,
             cell_descriptors_depth: Descriptor,
-        ) -> Tuple[Genotype, Fitness, Descriptor, Genotype, Fitness, Descriptor]:
+            cell_evaluations_depth: jnp.ndarray,
+        ) -> Tuple[
+            Genotype, Fitness, Descriptor, jnp.ndarray, Genotype, Fitness, Descriptor
+        ]:
             """
             For a given cell with index cell_idx, filter candidate
             indivs for this cell, and add them to it, reordering so
@@ -231,11 +168,13 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
               cell_genotype_depth: genotype in the cell
               cell_fitnesses_depth: fitnesses in the cell
               cell_descriptors_depth: descriptors in the cell
+              cell_evaluations_depth: evaluations in the cell
 
             Returns:
               new_cell_genotype_depth
               new_cell_fitnesses_depth
               new_cell_descriptors_depth
+              new_cell_evaluations_depth
               new_cell_genotype: genotype in the top layer of the cell
               new_cell_fitnesses: fitnesses in the top layer of the cell
               new_cell_descriptors: descriptors in the top layer of the cell
@@ -263,6 +202,7 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             )
             new_cell_fitnesses_depth = cell_fitnesses_depth.at[cell_indices].get()
             new_cell_descriptors_depth = cell_descriptors_depth.at[cell_indices].get()
+            new_cell_evaluations_depth = cell_evaluations_depth.at[cell_indices].get()
 
             # Second, add the candidate indivs
             candidate_indices = jnp.where(
@@ -286,6 +226,9 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             new_cell_descriptors_depth = new_cell_descriptors_depth.at[
                 depth_indices
             ].set(batch_of_descriptors[candidate_indices])
+            new_cell_evaluations_depth = new_cell_evaluations_depth.at[
+                depth_indices
+            ].set(batch_of_evaluations[candidate_indices])
 
             # Also return the top layer of the grid
             new_cell_genotype = jax.tree_map(
@@ -300,6 +243,7 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
                 new_cell_genotype_depth,
                 new_cell_fitnesses_depth,
                 new_cell_descriptors_depth,
+                new_cell_evaluations_depth,
                 new_cell_genotype,
                 new_cell_fitnesses,
                 new_cell_descriptors,
@@ -310,6 +254,7 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             new_genotype_depth,
             new_fitnesses_depth,
             new_descriptors_depth,
+            new_evaluations_depth,
             new_genotype,
             new_fitnesses,
             new_descriptors,
@@ -318,7 +263,11 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             self.genotypes_depth,
             self.fitnesses_depth,
             self.descriptors_depth,
+            self.evaluations_depth,
         )
+
+        # Compute new total evaluations
+        new_total_evaluations = self.total_evaluations + jnp.sum(batch_of_evaluations)
 
         return self.replace(  # type:ignore
             genotypes=new_genotype,
@@ -327,6 +276,8 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
             fitnesses_depth=new_fitnesses_depth,
             descriptors=new_descriptors,
             descriptors_depth=new_descriptors_depth,
+            evaluations_depth=new_evaluations_depth,
+            total_evaluations=new_total_evaluations,
         )
 
     @classmethod
@@ -338,7 +289,7 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         extra_scores: ExtraScores,
         centroids: Centroid,
         depth: int,
-    ) -> DeepMapElitesRepertoire:
+    ) -> EvaluationsDeepMapElitesRepertoire:
         """
         Initialize a Map-Elites repertoire with an initial population of genotypes.
         Requires the definition of centroids that can be computed with any method
@@ -383,15 +334,19 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         default_descriptors_depth = jnp.zeros(
             shape=(num_centroids, depth, centroids.shape[-1])
         )
+        default_evaluations_depth = jnp.zeros(shape=(num_centroids, depth))
+        default_total_evaluations = 0
         dims = jnp.zeros(shape=(depth))
 
-        repertoire = DeepMapElitesRepertoire(
+        repertoire = EvaluationsDeepMapElitesRepertoire(
             genotypes=default_genotypes,
             genotypes_depth=default_genotypes_depth,
             fitnesses=default_fitnesses,
             fitnesses_depth=default_fitnesses_depth,
             descriptors=default_descriptors,
             descriptors_depth=default_descriptors_depth,
+            evaluations_depth=default_evaluations_depth,
+            total_evaluations=default_total_evaluations,
             centroids=centroids,
             dims=dims,
         )
@@ -402,12 +357,12 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         return new_repertoire  # type: ignore
 
     @jax.jit
-    def empty(self) -> DeepMapElitesRepertoire:
+    def empty(self) -> EvaluationsDeepMapElitesRepertoire:
         """
         Empty the grid from all existing individuals.
 
         Returns:
-            An empty DeepMapElitesRepertoire
+            An empty EvaluationsDeepMapElitesRepertoire
         """
 
         new_fitnesses = jnp.full_like(self.fitnesses, -jnp.inf)
@@ -418,53 +373,17 @@ class DeepMapElitesRepertoire(flax.struct.PyTreeNode):
         new_genotypes_depth = jax.tree_map(
             lambda x: jnp.zeros_like(x), self.genotypes_depth
         )
-        return DeepMapElitesRepertoire(
+        new_evaluations_depth = jnp.zeros_like(self.evaluations_depth)
+        new_total_evaluations = 0
+        return EvaluationsDeepMapElitesRepertoire(
             genotypes=new_genotypes,
             genotypes_depth=new_genotypes_depth,
             fitnesses=new_fitnesses,
             fitnesses_depth=new_fitnesses_depth,
             descriptors=new_descriptors,
             descriptors_depth=new_descriptors_depth,
+            evaluations_depth=new_evaluations_depth,
+            total_evaluations=new_total_evaluations,
             centroids=self.centroids,
             dims=self.dims,
         )
-
-    @jax.jit
-    def added_repertoire(
-        self,
-        genotypes: Genotype,
-        descriptors: Descriptor,
-    ) -> jnp.ndarray:
-        """Compute if the given genotypes have been added to the repertoire in
-        corresponding cell.
-
-        Args:
-            genotypes: genotypes candidate to addition
-            descriptors: corresponding descriptors
-        Returns:
-            boolean for each genotype
-        """
-        cells = get_cells_indices(descriptors, self.centroids)
-        repertoire_genotypes = jax.tree_util.tree_map(
-            lambda x: x[cells], self.genotypes_depth
-        )
-        genotypes = jax.tree_util.tree_map(
-            lambda x, y: jnp.repeat(
-                jnp.expand_dims(x, axis=1), self.dims.shape[0], axis=1
-            ),
-            genotypes,
-            repertoire_genotypes,
-        )
-        added = jax.tree_util.tree_map(
-            lambda x, y: jnp.equal(x, y),
-            genotypes,
-            repertoire_genotypes,
-        )
-        added = jax.tree_util.tree_map(lambda x: jnp.any(x, axis=1), added)
-        added = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (descriptors.shape[0], -1)), added
-        )
-        added = jax.tree_util.tree_map(lambda x: jnp.all(x, axis=1), added)
-        final_added = jnp.array(jax.tree_util.tree_leaves(added))
-        final_added = jnp.all(final_added, axis=0)
-        return final_added

@@ -8,11 +8,10 @@ from typing import Callable, Optional, Tuple
 import jax
 import jax.numpy as jnp
 from qdax.core.emitters.emitter import Emitter, EmitterState
+from qdax.core.containers.repertoire import Repertoire
 from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, Metrics, RNGKey
 
 from core.archive_sampling import ArchiveSampling
-from core.containers.mapelites_repertoire import MapElitesRepertoire
-
 
 class ParallelAdaptiveSampling(ArchiveSampling):
     """
@@ -39,7 +38,7 @@ class ParallelAdaptiveSampling(ArchiveSampling):
             [Genotype, RNGKey], Tuple[Fitness, Descriptor, ExtraScores, RNGKey]
         ],
         emitter: Emitter,
-        metrics_function: Callable[[MapElitesRepertoire], Metrics],
+        metrics_function: Callable[[Repertoire], Metrics],
         depth: int,
         sampling_size: int = 0,
         batch_size: int = 0,
@@ -71,10 +70,10 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         self,
         num_samples: int,
         batch_size: int,
-        repertoire: MapElitesRepertoire,
+        repertoire: Repertoire,
         emitter_state: Optional[EmitterState],
         random_key: RNGKey,
-    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[Repertoire, Optional[EmitterState], Metrics, RNGKey]:
         """
         Performs one iteration of the jitable part of Parallel-Adaptive-Sampling.
 
@@ -124,7 +123,7 @@ class ParallelAdaptiveSampling(ArchiveSampling):
 
         # final genotypes
         final_genotypes = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x, y], axis=0),
+            lambda x, y: jnp.concatenate([jnp.reshape(x, y.shape), y], axis=0),
             repertoire.genotypes_depth,
             genotypes,
         )
@@ -193,9 +192,9 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         emitter_state = self._emitter.state_update(
             emitter_state=emitter_state,
             repertoire=repertoire,
-            genotypes=final_genotypes,
-            fitnesses=final_fitnesses,
-            descriptors=final_descriptors,
+            genotypes=genotypes,
+            fitnesses=final_fitnesses[-batch_size:],
+            descriptors=final_descriptors[-batch_size:],
             extra_scores=final_extra_scores,
         )
 
@@ -206,10 +205,10 @@ class ParallelAdaptiveSampling(ArchiveSampling):
 
     def update(
         self,
-        repertoire: MapElitesRepertoire,
+        repertoire: Repertoire,
         emitter_state: Optional[EmitterState],
         random_key: RNGKey,
-    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[Repertoire, Optional[EmitterState], Metrics, RNGKey]:
         """
         !!!WARNING!!! Un-jitable as it is now
 
