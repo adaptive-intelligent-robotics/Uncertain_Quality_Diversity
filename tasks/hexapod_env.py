@@ -134,7 +134,7 @@ def scoring_function_time(
         "behavior_descriptor_extractor",
     ),
 )
-def reset_based_scoring_function_time(
+def reset_based_scoring_function_time_brax_envs(
     policies_params: Genotype,
     random_key: RNGKey,
     episode_length: int,

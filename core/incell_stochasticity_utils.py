@@ -3,263 +3,38 @@ from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, Metrics, RNGKey
 
-from core.containers.mapelites_repertoire import MapElitesRepertoire
-from core.stochasticity_utils import dummy_extra_scores_extractor
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "scoring_fn",
-        "num_reevals",
-        "extra_scores_extractor",
-        "use_median",
-    ),
-)
-def _incell_reevaluation_function(
-    random_key: RNGKey,
-    repertoire: MapElitesRepertoire,
-    scoring_fn: Callable[
-        [Genotype, RNGKey],
-        Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
-    ],
-    num_reevals: int,
-    extra_scores_extractor: Callable[
-        [ExtraScores, int], ExtraScores
-    ] = dummy_extra_scores_extractor,
-    use_median: bool = False,
-) -> Tuple[RNGKey, Genotype, Descriptor, Descriptor, Fitness, Fitness, ExtraScores]:
-    """
-    Perform reevaluation of a repertoire in stochastic applications.
-
-    Args:
-        random_key
-        repertoire: repertoire to reevaluate.
-        scoring_fn
-        num_reevals
-        extra_scores_extractor: function to average the extra_scores of the samples.
-        use_median: use the median instead of average to compute final metric.
-    Returns:
-        The results of the reevaluation and a new random key.
-    """
-
-    # Get genotypes
-    num_centroids = repertoire.centroids.shape[0]
-    (
-        all_genotypes,
-        all_repertoire_fitnesses,
-        _,
-        random_key,
-    ) = repertoire.sample_all_cells(random_key, num_reevals)
-
-    # Eval
-    all_fitnesses, all_descriptors, all_extra_scores, random_key = scoring_fn(
-        all_genotypes, random_key
-    )
-
-    # Set -inf fitness for all unexisting indivs
-    all_fitnesses = jnp.where(
-        all_repertoire_fitnesses == -jnp.inf, -jnp.inf, all_fitnesses
-    )
-
-    # Take genotypes in repertoire.genotypes
-    genotypes = repertoire.genotypes
-
-    # Average fitnesses and descriptors
-    all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
-    all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
-    if use_median:
-        descriptors = jnp.median(all_descriptors, axis=1)
-        fitnesses = jnp.median(all_fitnesses, axis=1)
-    else:
-        descriptors = jnp.average(all_descriptors, axis=1)
-        fitnesses = jnp.average(all_fitnesses, axis=1)
-
-    # Compute variance
-    descriptors_var = jnp.mean(jnp.nanstd(all_descriptors, axis=1), axis=1)
-    fitnesses_var = jnp.nanstd(all_fitnesses, axis=1)
-
-    # Set -inf fitness for all unexisting indivs
-    fitnesses = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses)
-    fitnesses_var = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses_var)
-    descriptors_var = jnp.where(
-        repertoire.fitnesses == -jnp.inf, -jnp.inf, descriptors_var
-    )
-
-    # Extract extra scores
-    extra_scores = extra_scores_extractor(all_extra_scores, num_reevals)
-
-    return (
-        random_key,
-        genotypes,
-        descriptors,
-        descriptors_var,
-        fitnesses,
-        fitnesses_var,
-        extra_scores,
-    )
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "scoring_fn",
-        "depth",
-        "num_reevals",
-        "extra_scores_extractor",
-        "use_median",
-    ),
-)
-def incell_reevaluation_function(
-    repertoire: MapElitesRepertoire,
-    random_key: RNGKey,
-    metric_repertoire: MapElitesRepertoire,
-    scoring_fn: Callable[
-        [Genotype, RNGKey],
-        Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
-    ],
-    depth: int,
-    num_reevals: int,
-    extra_scores_extractor: Callable[
-        [ExtraScores, int], ExtraScores
-    ] = dummy_extra_scores_extractor,
-    use_median: bool = False,
-) -> Tuple[
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    RNGKey,
-]:
-    """
-    Perform reevaluation of a repertoire in stochastic applications.
-
-    Args:
-        repertoire: repertoire to reevaluate.
-        metric_repertoire: repertoire used to compute reeval stats, allow to use a
-            different type of container than the one from the algorithm (in most cases
-            just set to the same as repertoire).
-        random_key
-        scoring_fn
-        depth: depth of the grid
-        num_reevals
-        extra_scores_extractor: function to average the extra_scores of the samples.
-        use_median: use the median instead of average to compute final metric.
-    Returns:
-        The reevaluated container and a new random key.
-    """
-
-    if num_reevals == 0:
-        return repertoire, repertoire, repertoire, repertoire, repertoire, random_key
-
-    (
-        random_key,
-        genotypes,
-        descriptors,
-        descriptors_var,
-        fitnesses,
-        fitnesses_var,
-        extra_scores,
-    ) = _incell_reevaluation_function(
-        random_key=random_key,
-        repertoire=repertoire,
-        scoring_fn=scoring_fn,
-        num_reevals=num_reevals,
-        extra_scores_extractor=extra_scores_extractor,
-        use_median=use_median,
-    )
-
-    # Fill-in new repertoire
-    reeval_repertoire = metric_repertoire.empty()
-    reeval_repertoire = reeval_repertoire.add(
-        genotypes,
-        descriptors,
-        fitnesses,
-        extra_scores,
-    )
-
-    # Compute in-cell metrics for other repertoires
-    _, original_descriptors, original_fitnesses, random_key = _incell_metrics(
-        repertoire,
-        random_key,
-        depth,
-        use_median,
-    )
-
-    # Fill-in fit_reeval repertoire
-    fit_reeval_repertoire = metric_repertoire.empty()
-    fit_reeval_repertoire = fit_reeval_repertoire.add(
-        genotypes,
-        original_descriptors,
-        fitnesses,
-        extra_scores,
-    )
-
-    # Fill-in desc_reeval repertoire
-    desc_reeval_repertoire = metric_repertoire.empty()
-    desc_reeval_repertoire = desc_reeval_repertoire.add(
-        genotypes,
-        descriptors,
-        original_fitnesses,
-        extra_scores,
-    )
-
-    # Fill-in fit_var repertoire
-    fit_var_repertoire = metric_repertoire.empty()
-    fit_var_repertoire = fit_var_repertoire.add(
-        genotypes,
-        original_descriptors,
-        fitnesses_var,
-        extra_scores,
-    )
-
-    # Fill-in desc_var repertoire
-    desc_var_repertoire = metric_repertoire.empty()
-    desc_var_repertoire = desc_var_repertoire.add(
-        genotypes,
-        original_descriptors,
-        descriptors_var,
-        extra_scores,
-    )
-
-    return (
-        reeval_repertoire,
-        fit_reeval_repertoire,
-        desc_reeval_repertoire,
-        fit_var_repertoire,
-        desc_var_repertoire,
-        random_key,
-    )
+from core.sampling import dummy_extra_scores_extractor, median, std
 
 
 @partial(
     jax.jit,
     static_argnames=(
         "depth",
-        "use_median",
-        "use_closer",
+        "fitness_extractor",
+        "descriptor_extractor",
     ),
 )
 def _incell_metrics(
     repertoire: MapElitesRepertoire,
     random_key: RNGKey,
     depth: int,
-    use_median: bool = False,
-    use_closer: bool = False,
+    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
 ) -> Tuple[Genotype, Fitness, Descriptor, RNGKey]:
     """
     Compute cell-metrics in stochastic applications.
 
     Args:
-        repertoire: repertoire to reevaluate.
-        random_key
+        repertoire: repertoire to compute metrics for.
+        random_key: JAX random key.
         depth: depth of the repertoire
-        use_median: use the median instead of average to compute final metric.
-        use_closer: use the individuals closest to median instead of average
-            to compute final metric (WARNING: overriding use_median)
+                fitness_extractor: function to extract the final fitness from
+            multiple samples of the same policy.
+        descriptor_extractor: function to extract the final descriptor from
+            multiple samples of the same policy.
     Returns:
         The cell-metrics and a new random key
     """
@@ -270,33 +45,15 @@ def _incell_metrics(
         random_key, depth
     )
 
-    # Take genotypes in repertoire.genotypes
-    genotypes = repertoire.genotypes
-
-    # Average fitnesses and descriptors per cell for metrics computation
+    # Reshape the score
     all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, depth))
     all_descriptors = jnp.reshape(all_descriptors, (num_centroids, depth, -1))
-    if use_closer:
 
-        def one_dim_closer_median(values: jnp.ndarray) -> jnp.ndarray:
-            def distance(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-                return jnp.sqrt(jnp.sum(jnp.square(x - y)))
+    # Extract the final scores
+    fitnesses = fitness_extractor(all_fitnesses)
+    descriptors = descriptor_extractor(all_descriptors)
 
-            distances = jax.vmap(
-                jax.vmap(partial(distance), in_axes=(None, 0)), in_axes=(0, None)
-            )(values, values)
-            return values[jnp.argmin(jnp.mean(distances, axis=0))]
-
-        descriptors = jax.vmap(one_dim_closer_median)(all_descriptors)
-        fitnesses = jax.vmap(one_dim_closer_median)(all_fitnesses)
-    elif use_median:
-        descriptors = jnp.median(all_descriptors, axis=1)
-        fitnesses = jnp.median(all_fitnesses, axis=1)
-    else:
-        descriptors = jnp.average(all_descriptors, axis=1)
-        fitnesses = jnp.average(all_fitnesses, axis=1)
-
-    return genotypes, descriptors, fitnesses, random_key
+    return repertoire.genotypes, descriptors, fitnesses, random_key
 
 
 @partial(
@@ -304,8 +61,8 @@ def _incell_metrics(
     static_argnames=(
         "metrics_function",
         "depth",
-        "use_median",
-        "use_closer",
+        "fitness_extractor",
+        "descriptor_extractor",
     ),
 )
 def metrics_incell_wrapper(
@@ -313,8 +70,8 @@ def metrics_incell_wrapper(
     random_key: RNGKey,
     metrics_function: Callable[[MapElitesRepertoire], Metrics],
     depth: int,
-    use_median: bool = False,
-    use_closer: bool = False,
+    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
 ) -> Tuple[Metrics, RNGKey]:
     """
     Perform evaluation of a repertoire in stochastic applications.
@@ -324,9 +81,10 @@ def metrics_incell_wrapper(
         random_key
         metrics_function: function to compute metrics of a repertoire
         depth: depth of the repertoire
-        use_median: use the median instead of average to compute final metric.
-        use_closer: use the individuals closest to median instead of average
-            to compute final metric (WARNING: overriding use_median)
+                fitness_extractor: function to extract the final fitness from
+            multiple samples of the same policy.
+        descriptor_extractor: function to extract the final descriptor from
+            multiple samples of the same policy.
     Returns:
         The metrics container and a new random key.
     """
@@ -336,63 +94,8 @@ def metrics_incell_wrapper(
         repertoire,
         random_key,
         depth,
-        use_median,
-        use_closer,
-    )
-
-    # Fill-in new repertoire
-    metrics_repertoire = repertoire.empty()
-    metrics_repertoire = metrics_repertoire.add(
-        genotypes,
-        descriptors,
-        fitnesses,
-        {},
-    )
-
-    metrics = metrics_function(metrics_repertoire)
-
-    return metrics, random_key
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "metrics_function",
-        "depth",
-        "use_median",
-        "use_closer",
-    ),
-)
-def metrics_incell_random_wrapper(
-    repertoire: MapElitesRepertoire,
-    random_key: RNGKey,
-    metrics_function: Callable[[MapElitesRepertoire], Metrics],
-    depth: int,
-    use_median: bool = False,
-    use_closer: bool = False,
-) -> Tuple[Metrics, RNGKey]:
-    """
-    Perform evaluation of a repertoire in stochastic applications.
-
-    Args:
-        repertoire: repertoire to reevaluate.
-        random_key
-        metrics_function: function to compute metrics of a repertoire
-        depth: depth of the repertoire
-        use_median: use the median instead of average to compute final metric.
-        use_closer: use the individuals closest to median instead of average
-            to compute final metric (WARNING: overriding use_median)
-    Returns:
-        The metrics container and a new random key.
-    """
-
-    # Compute the in-cell metrics
-    genotypes, descriptors, fitnesses, random_key = _incell_metrics(
-        repertoire,
-        random_key,
-        depth,
-        use_median,
-        use_closer,
+        fitness_extractor,
+        descriptor_extractor,
     )
 
     # Fill-in new repertoire
@@ -408,3 +111,254 @@ def metrics_incell_random_wrapper(
     metrics = metrics_function(metrics_repertoire)
 
     return metrics, random_key
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "scoring_fn",
+        "depth",
+        "num_reevals",
+        "scan_size",
+        "fitness_extractor",
+        "fitness_reproducibility_extractor",
+        "descriptor_extractor",
+        "descriptor_reproducibility_extractor",
+        "extra_scores_extractor",
+    ),
+)
+def incell_reevaluation_function(
+    repertoire: MapElitesRepertoire,
+    random_key: RNGKey,
+    metric_repertoire: MapElitesRepertoire,
+    scoring_fn: Callable[
+        [Genotype, RNGKey],
+        Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
+    ],
+    depth: int,
+    num_reevals: int,
+    scan_size: int,
+    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray] = std,
+    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray] = std,
+    extra_scores_extractor: Callable[
+        [ExtraScores, int], ExtraScores
+    ] = dummy_extra_scores_extractor,
+) -> Tuple[
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    MapElitesRepertoire,
+    RNGKey,
+]:
+    """
+    Perform reevaluation of a repertoire in stochastic applications.
+
+    Args:
+        repertoire: repertoire to reevaluate.
+        metric_repertoire: repertoire used to compute reeval stats, allow to use a
+            different type of container than the one from the algorithm (in most cases
+            just set to the same as repertoire).
+        random_key: JAX random key.
+        scoring_fn: scoring function used for evaluation.
+        num_reevals: number of samples to generate for each individual.
+        scan_size: allow to split the reevaluations in multiple batch in case the
+            memory is limited.
+                fitness_extractor: function to extract the final fitness from
+            multiple samples of the same policy.
+                fitness_reproducibility_extractor: function to extract the fitness
+            reproducibility from multiple samples of the same policy.
+        descriptor_extractor: function to extract the final descriptor from
+            multiple samples of the same policy.
+                descriptor_reproducibility_extractor: function to extract the descriptor
+            reproducibility from multiple samples of the same policy.
+        extra_scores_extractor: function to extract the extra_scores from
+            multiple samples of the same policy.
+    Returns:
+        A container with reevaluated fitness and descriptor.
+        A container with reevaluated fitness only.
+        A container with reevaluated descriptor only.
+        A non-reevaluated container with reproducibility in fitness.
+        A reevaluated container with reproducibility in fitness.
+        A non-reevaluated container with reproducibility in descriptor.
+        A reevaluated container with reproducibility in descriptor.
+        A random key.
+    """
+
+    # If no reevaluations, return copies of the original container
+    if num_reevals == 0:
+        return (
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            random_key,
+        )
+
+    (
+        all_genotypes,
+        all_repertoire_fitnesses,
+        _,
+        random_key,
+    ) = repertoire.sample_all_cells(random_key, num_reevals)
+    num_centroids = repertoire.centroids.shape[0]
+
+    # If no need for scan, call the sampling function
+    if scan_size == 0:
+        (all_fitnesses, all_descriptors, all_extra_scores, random_key) = scoring_fn(
+            all_genotypes,
+            random_key,
+        )
+        all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
+        all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
+    else:
+        num_loops = num_reevals // scan_size
+
+        # Reshape genotypes for scan
+        scan_genotypes = jax.tree_util.tree_map(
+            lambda x: jnp.reshape(x, (num_loops, -1, all_genotypes.shape[1])),
+            all_genotypes,
+        )
+
+        def _sampling_scan(
+            carry: Tuple[int, RNGKey],
+            unused: Tuple[()],
+        ) -> Tuple[Tuple[int, RNGKey], Tuple[Fitness, Descriptor, ExtraScores]]:
+            counter, random_key = carry
+            genotypes = jax.tree_util.tree_map(lambda x: x[counter], scan_genotypes)
+            (
+                all_fitnesses,
+                all_descriptors,
+                all_extra_scores,
+                random_key,
+            ) = scoring_fn(genotypes, random_key)
+            counter += 1
+            return (counter, random_key), (
+                all_fitnesses,
+                all_descriptors,
+                all_extra_scores,
+            )
+
+        (_, random_key), (
+            all_fitnesses,
+            all_descriptors,
+            all_extra_scores,
+        ) = jax.lax.scan(_sampling_scan, (0, random_key), (), length=num_loops)
+
+        # Get correct output shape
+        all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
+        all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
+
+    # Extract the final scores
+    extra_scores = extra_scores_extractor(all_extra_scores, num_reevals)
+    fitnesses = fitness_extractor(all_fitnesses)
+    fitnesses_reproducibility = fitness_reproducibility_extractor(all_fitnesses)
+    descriptors = descriptor_extractor(all_descriptors)
+    descriptors_reproducibility = descriptor_reproducibility_extractor(all_descriptors)
+
+    # WARNING: in the case of descriptors_reproducibility, take average over dimensions
+    descriptors_reproducibility = jnp.average(descriptors_reproducibility, axis=-1)
+
+    # Set -inf fitness for all unexisting indivs
+    fitnesses = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses)
+    fitnesses_reproducibility = jnp.where(
+        repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses_reproducibility
+    )
+    descriptors_reproducibility = jnp.where(
+        repertoire.fitnesses == -jnp.inf, -jnp.inf, descriptors_reproducibility
+    )
+
+    # Compute in-cell metrics for other repertoires
+    (
+        original_genotypes,
+        original_descriptors,
+        original_fitnesses,
+        random_key,
+    ) = _incell_metrics(
+        repertoire,
+        random_key,
+        depth,
+        fitness_extractor,
+        descriptor_extractor,
+    )
+
+    # Fill-in reeval repertoire
+    reeval_repertoire = metric_repertoire.empty()
+    reeval_repertoire = reeval_repertoire.add(
+        original_genotypes,
+        descriptors,
+        fitnesses,
+        extra_scores,
+    )
+
+    # Fill-in fit_reeval repertoire
+    fit_reeval_repertoire = metric_repertoire.empty()
+    fit_reeval_repertoire = fit_reeval_repertoire.add(
+        original_genotypes,
+        original_descriptors,
+        fitnesses,
+        extra_scores,
+    )
+
+    # Fill-in desc_reeval repertoire
+    desc_reeval_repertoire = metric_repertoire.empty()
+    desc_reeval_repertoire = desc_reeval_repertoire.add(
+        original_genotypes,
+        descriptors,
+        original_fitnesses,
+        extra_scores,
+    )
+
+    # Fill-in fit_reproducibility repertoire
+    fit_reproducibility_repertoire = metric_repertoire.empty()
+    fit_reproducibility_repertoire = fit_reproducibility_repertoire.add(
+        original_genotypes,
+        original_descriptors,
+        fitnesses_reproducibility,
+        extra_scores,
+    )
+
+    # Fill-in reeval_fit_reproducibility repertoire
+    reeval_fit_reproducibility_repertoire = metric_repertoire.empty()
+    reeval_fit_reproducibility_repertoire = reeval_fit_reproducibility_repertoire.add(
+        original_genotypes,
+        descriptors,
+        fitnesses_reproducibility,
+        extra_scores,
+    )
+
+    # Fill-in desc_reproducibility repertoire
+    desc_reproducibility_repertoire = metric_repertoire.empty()
+    desc_reproducibility_repertoire = desc_reproducibility_repertoire.add(
+        original_genotypes,
+        original_descriptors,
+        descriptors_reproducibility,
+        extra_scores,
+    )
+
+    # Fill-in reeval_desc_reproducibility repertoire
+    reeval_desc_reproducibility_repertoire = metric_repertoire.empty()
+    reeval_desc_reproducibility_repertoire = reeval_desc_reproducibility_repertoire.add(
+        original_genotypes,
+        descriptors,
+        descriptors_reproducibility,
+        extra_scores,
+    )
+
+    return (
+        reeval_repertoire,
+        fit_reeval_repertoire,
+        desc_reeval_repertoire,
+        fit_reproducibility_repertoire,
+        reeval_fit_reproducibility_repertoire,
+        desc_reproducibility_repertoire,
+        reeval_desc_reproducibility_repertoire,
+        random_key,
+    )

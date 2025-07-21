@@ -13,6 +13,8 @@ from qdax.core.containers.repertoire import Repertoire
 from qdax.types import Genotype, RNGKey
 from qdax.utils.plotting import get_voronoi_finite_polygons_2d
 
+from analysis.reeval_stats import closer_median, geometric_median
+
 
 def save_html(
     file_name: str,
@@ -66,6 +68,14 @@ def plot_visualisation_archive(
     median_descriptor: jnp.ndarray = None,
     median_fitness: jnp.ndarray = None,
     median_both: jnp.ndarray = None,
+    closermedian: bool = False,
+    closer_descriptor: jnp.ndarray = None,
+    closer_fitness: jnp.ndarray = None,
+    closer_both: jnp.ndarray = None,
+    geometricmedian: bool = False,
+    geometric_descriptor: jnp.ndarray = None,
+    geometric_fitness: jnp.ndarray = None,
+    geometric_both: jnp.ndarray = None,
     paper_plot: bool = False,
 ) -> None:
 
@@ -211,6 +221,85 @@ def plot_visualisation_archive(
             label="Median both",
         )
 
+    # Add closer to median
+    if closermedian and not (
+        closer_descriptor is not None
+        and closer_fitness is not None
+        and closer_both is not None
+    ):
+        both = jnp.concatenate(
+            [descriptors, jnp.expand_dims(fitnesses, axis=1)], axis=1
+        )
+        closer_descriptor = closer_median(descriptors, axis=0)
+        closer_fitness = closer_median(fitnesses, axis=0)
+        closer_both = closer_median(both, axis=0)
+    if (
+        closer_descriptor is not None
+        and closer_fitness is not None
+        and closer_both is not None
+    ):
+        ax.scatter(
+            closer_descriptor[0],
+            closer_descriptor[1],
+            c=closer_fitness,
+            norm=norm,
+            marker="D",
+            edgecolor="r",
+            s=80 if not paper_plot else 550,
+            zorder=0,
+            label="Closer",
+        )
+        ax.scatter(
+            closer_both[0],
+            closer_both[1],
+            c=closer_both[2],
+            norm=norm,
+            marker="*",
+            edgecolor="r",
+            s=80 if not paper_plot else 550,
+            zorder=0,
+            label="Closer both",
+        )
+
+    # Add geometric median descriptor
+    if geometricmedian and not (
+        geometric_descriptor is not None
+        and geometric_fitness is not None
+        and geometric_both is not None
+    ):
+        both = jnp.concatenate(
+            [descriptors, jnp.expand_dims(fitnesses, axis=1)], axis=1
+        )
+        geometric_descriptor = geometric_median(descriptors, axis=0)
+        geometric_fitness = jnp.median(fitnesses, axis=0)  # Fitness is one-dimensional
+        geometric_both = geometric_median(both, axis=0)
+    if (
+        geometric_descriptor is not None
+        and geometric_fitness is not None
+        and geometric_both is not None
+    ):
+        ax.scatter(
+            geometric_descriptor[0],
+            geometric_descriptor[1],
+            c=geometric_fitness,
+            norm=norm,
+            marker="v",
+            edgecolor="r",
+            s=80 if not paper_plot else 550,
+            zorder=0,
+            label="Geometric",
+        )
+        ax.scatter(
+            geometric_both[0],
+            geometric_both[1],
+            c=geometric_both[2],
+            norm=norm,
+            marker="^",
+            edgecolor="r",
+            s=80 if not paper_plot else 550,
+            zorder=0,
+            label="Geometric both",
+        )
     if not paper_plot:
         plt.legend()
 

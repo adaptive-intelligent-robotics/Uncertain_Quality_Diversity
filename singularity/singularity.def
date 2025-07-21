@@ -1,6 +1,9 @@
 Bootstrap: library
 From: airl_lab/default/airl_env:qdax_f57720d0
 
+%files
+   ../requirements.txt /requirements.txt
+
 %labels
     Author manon.flageat18@imperial.ac.uk
     Version v0.0.1
@@ -16,16 +19,11 @@ From: airl_lab/default/airl_env:qdax_f57720d0
    apt-get update -y
    pip3 install --upgrade pip
 
-   # Install required libraries
-   pip3 install natsort==8.2.0 typing-extensions==4.3.0
-   pip install jaxlib==0.3.15+cuda11_cudnn82 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-   pip3 install jax==0.3.17 flax==0.6.0 brax==0.0.15 chex==0.1.4
-
-   # QDax
-   pip3 install qdax==0.2.1
+   # Install requirements
+   pip3 install -r requirements.txt
 
    # Create working directory
-   mkdir -p /git/exp/uqd/
+   mkdir -p /git/exp/uncertain_quality_diversity/
 
    #==================================================================================
    exit 0 #NOTFORFINAL - the lines below this "exit" will be executed only when building the final image
@@ -33,15 +31,15 @@ From: airl_lab/default/airl_env:qdax_f57720d0
 
    # Enter working directory
    cd /git/exp/
-   git clone https://gitlab.doc.ic.ac.uk/AIRL/research_projects/manon_flageat/uqd.git
+   git clone https://github.com/adaptive-intelligent-robotics/Uncertain_Quality_Diversity.git
 
 %runscript
 
     # Create results folders
     echo
-    echo "Entering directory /git/exp/uqd"
+    echo "Entering directory /git/exp/uncertain_quality_diversity"
     CURPATH=$(pwd)
-    cd /git/exp/uqd
+    cd /git/exp/uncertain_quality_diversity
 
     echo
     echo "Creating result directory $CURPATH/$DIRNAME/"
@@ -75,7 +73,100 @@ From: airl_lab/default/airl_env:qdax_f57720d0
         python3 main.py --results $tmp_dir "$@"
     done
 
+%apprun reeval_tunning
+
+    # Create results folders
+    echo
+    echo "Entering directory /git/exp/uncertain_quality_diversity"
+    CURPATH=$(pwd)
+    cd /git/exp/uncertain_quality_diversity
+
+    echo
+    echo "Creating result directory $CURPATH/$DIRNAME/"
+    DIRNAME=results_$1
+    mkdir -p $CURPATH/$DIRNAME/
+
+    if [ ! -z "${PBS_ARRAY_INDEX}" ]
+      then
+        tmp_dir=$CURPATH/$DIRNAME/$DIRNAME.${PBS_ARRAY_INDEX}
+    else
+      PATHNAME=$(date +%Y-%m-%d_%H_%M_%S)_$$
+      tmp_dir=$(mktemp -d -p $CURPATH/$DIRNAME/ $PATHNAME.XXX)
+    fi
+    mkdir -p $tmp_dir
+    echo
+    echo "Created $tmp_dir"
+
+    # Read number of replications
+    REPLICATIONS=$2
+    echo
+    echo "Replicating run $REPLICATIONS times"
+
+    shift
+    shift
+
+    # Run experiments
+    for RUN in $(seq 1 $REPLICATIONS)
+    do
+        echo
+        echo "Running python3 main_reeval_tunning.py --results $tmp_dir $@"
+        python3 main_reeval_tunning.py --results $tmp_dir "$@"
+    done
+
+%apprun size_runscript
+
+    # Create results folders
+    echo
+    echo "Entering directory /git/exp/uncertain_quality_diversity"
+    CURPATH=$(pwd)
+    cd /git/exp/uncertain_quality_diversity
+
+    echo
+    echo "Creating result directory $CURPATH/$DIRNAME/"
+    DIRNAME=results_$1
+    mkdir -p $CURPATH/$DIRNAME/
+
+    # Read number of replications
+    REPLICATIONS=$2
+    echo
+    echo "Replicating run $REPLICATIONS times for sampling sizes: 4096 16384, not running: 256 1024"
+
+    shift
+    shift
+
+    # Run experiments
+    for SIZE in 4096 16384
+    do
+        if [ ! -z "${PBS_ARRAY_INDEX}" ]
+        then
+            tmp_dir=$CURPATH/$DIRNAME/$DIRNAME.${PBS_ARRAY_INDEX}_$SIZE
+        else
+            PATHNAME=$(date +%Y-%m-%d_%H_%M_%S)_$$
+            tmp_dir=$(mktemp -d -p $CURPATH/$DIRNAME/$PATHNAME.XXX_$SIZE)
+        fi
+        mkdir -p $tmp_dir
+        echo
+        echo "Created $tmp_dir"
+
+	for RUN in $(seq 1 $REPLICATIONS)
+        do
+            echo
+	    echo "Running replication $RUN"
+            echo "Running python3 main.py --results $tmp_dir --sampling-size $SIZE --size-log-period $@"
+            python3 main.py --results $tmp_dir --sampling-size $SIZE --size-log-period "$@"
+        done
+    done
+
+
+%apprun Analysis
+    PATH_ANALYSIS=$1
+    shift
+
     # Run analysis
+    echo
+    echo "Entering directory /git/exp/uncertain_quality_diversity"
+    cd /git/exp/uncertain_quality_diversity/
+    echo
     echo "Running python3 main_num_reevals_tunning.py --results $PATH_ANALYSIS --plots $PATH_ANALYSIS --min-replications 64 --max-replications 16384 "$@""
     python3 main_num_reevals_tunning.py --results $PATH_ANALYSIS --plots $PATH_ANALYSIS --min-replications 64 --max-replications 16384 "$@"
 

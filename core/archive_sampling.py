@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from qdax.core.emitters.emitter import EmitterState
-from qdax.core.containers.repertoire import Repertoire
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
+from qdax.core.emitters.emitter import Emitter, EmitterState
 from qdax.types import (
     Centroid,
     Descriptor,
@@ -17,20 +17,97 @@ from qdax.types import (
     RNGKey,
 )
 
-from core.containers.evaluations_depth_repertoire import EvaluationsDeepMapElitesRepertoire
+from core.containers.archive_sampling_repertoire import ArchiveSamplingRepertoire
 from core.map_elites_depth import MAPElitesDepth
+from core.sampling import multi_sample_scoring_function
 
 
 class ArchiveSampling(MAPElitesDepth):
     """
-    Core elements of the Archive-Sampling algorithm.
+    Core elements of the Archive-Sampling algorithm storing all replications to allow any estimator.
     """
 
+    def __init__(
+        self,
+        scoring_function: Callable[
+            [Genotype, RNGKey], Tuple[Fitness, Descriptor, ExtraScores, RNGKey]
+        ],
+        emitter: Emitter,
+        metrics_function: Callable[[MapElitesRepertoire], Metrics],
+        depth: int,
+        num_iterations: int,
+        num_samples: int,
+        fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray],
+        fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
+        descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
+        descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
+    ) -> None:
+        self._scoring_function = scoring_function
+        self._emitter = emitter
+        self._metrics_function = metrics_function
+        self._depth = depth
+        self._max_total_evals = num_iterations + num_samples
+        self._offspring_num_samples = num_samples
+        self._fitness_extractor = fitness_extractor
+        self._fitness_reproducibility_extractor = fitness_reproducibility_extractor
+        self._descriptor_extractor = descriptor_extractor
+        self._descriptor_reproducibility_extractor = (
+            descriptor_reproducibility_extractor
+        )
+
     @partial(jax.jit, static_argnames=("self",))
+    def _add_repertoire(
+        self,
+        repertoire: MapElitesRepertoire,
+        genotypes: Genotype,
+        descriptors: Descriptor,
+        fitnesses: Fitness,
+        extra_scores: ExtraScores,
+    ) -> MapElitesRepertoire:
+        print("Adding in ArchiveSampling")
+
+        return repertoire.add(
+            batch_of_genotypes=genotypes,
+            batch_of_all_descriptors=descriptors,
+            batch_of_all_fitnesses=fitnesses,
+            batch_of_extra_scores=extra_scores,
+            fitness_extractor=self._fitness_extractor,
+            fitness_reproducibility_extractor=self._fitness_reproducibility_extractor,
+            descriptor_extractor=self._descriptor_extractor,
+            descriptor_reproducibility_extractor=self._descriptor_reproducibility_extractor,
+        )
+
+    @partial(jax.jit, static_argnames=("self",))
+    def _init_repertoire(
+        self,
+        genotypes: Genotype,
+        descriptors: Descriptor,
+        fitnesses: Fitness,
+        extra_scores: ExtraScores,
+        centroids: Centroid,
+    ) -> MapElitesRepertoire:
+        print("Initialisating in ArchiveSampling")
+
+        return ArchiveSamplingRepertoire.init(
+            genotypes=genotypes,
+            fitnesses=fitnesses,
+            descriptors=descriptors,
+            extra_scores=extra_scores,
+            centroids=centroids,
+            depth=self._depth,
+            num_evals=self._max_total_evals,
+            fitness_extractor=self._fitness_extractor,
+            fitness_reproducibility_extractor=self._fitness_reproducibility_extractor,
+            descriptor_extractor=self._descriptor_extractor,
+            descriptor_reproducibility_extractor=self._descriptor_reproducibility_extractor,
+        )
+
+    @partial(jax.jit, static_argnames=("self", "num_samples"))
     def _scoring_repertoire_offspring(
         self,
-        repertoire: Repertoire,
+        repertoire: MapElitesRepertoire,
         genotypes: Genotype,
+        num_samples: int,
         random_key: RNGKey,
     ) -> Tuple[Genotype, Fitness, Descriptor, ExtraScores, RNGKey]:
         """
@@ -46,101 +123,81 @@ class ArchiveSampling(MAPElitesDepth):
             extra_scores: corresponding extra_scores
         """
 
-        # get the content of the repertoire
-        num_centroids = repertoire.centroids.shape[0]
-        num_indivs = num_centroids * self._depth
+        # evaluate the new offspring
         batch_size = jax.tree_util.tree_leaves(genotypes)[0].shape[0]
-        total_size = num_indivs + batch_size
-        repertoire_genotypes = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (num_indivs,) + x.shape[2:]),
-            repertoire.genotypes_depth,
-        )
-        repertoire_fitnesses = jnp.reshape(
-            repertoire.fitnesses_depth,
-            (num_indivs,),
-        )
-        repertoire_descriptors = jnp.reshape(
-            repertoire.descriptors_depth,
-            (num_indivs, -1),
-        )
-        repertoire_evaluations = jnp.reshape(
-            repertoire.evaluations_depth,
-            (num_indivs,),
+        (fitnesses, descriptors, _, random_key,) = multi_sample_scoring_function(
+            genotypes, random_key, self._scoring_function, num_samples
         )
 
-        # concatenate to offspring
-        all_genotypes = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x, y], axis=0),
-            repertoire_genotypes,
-            genotypes,
+        # extand to the good shape
+        fitnesses = jnp.pad(
+            fitnesses,
+            ((0, 0), (0, self._max_total_evals - num_samples)),
+            "constant",
+            constant_values=jnp.nan,
+        )
+        descriptors = jnp.pad(
+            descriptors,
+            ((0, 0), (0, self._max_total_evals - num_samples), (0, 0)),
+            "constant",
+            constant_values=jnp.nan,
         )
 
-        # evaluate
+        # re-evaluate one time the content of the repertoire
         (
-            new_eval_fitnesses,
-            new_eval_descriptors,
-            extra_scores,
+            repertoire_fitnesses,
+            repertoire_descriptors,
+            _,
             random_key,
-        ) = self._scoring_function(all_genotypes, random_key)
+        ) = self._scoring_function(repertoire.genotypes_depth, random_key)
 
         # filter empty cells in repertoire
-        new_eval_weights = jnp.concatenate(
-            [repertoire_fitnesses > -jnp.inf, jnp.full(batch_size, 1)],
-            axis=0,
+        repertoire_fitnesses = jnp.where(
+            repertoire.fitnesses_depth > -jnp.inf, repertoire_fitnesses, -jnp.inf
         )
-        new_eval_fitnesses = jnp.where(new_eval_weights, new_eval_fitnesses, -jnp.inf)
 
-        # define concatenated array for the averaging
-        previous_eval_fitnesses = jnp.concatenate(
+        # add to the existing evaluations in the archive
+        repertoire_fitnesses = jax.lax.dynamic_update_slice(
+            repertoire.fitnesses_depth_all,
+            jnp.expand_dims(repertoire_fitnesses, axis=1),
+            (0, self._max_total_evals - 1),
+        )
+        repertoire_descriptors = jax.lax.dynamic_update_slice(
+            repertoire.descriptors_depth_all,
+            jnp.expand_dims(repertoire_descriptors, axis=1),
+            (0, self._max_total_evals - 1, 0),
+        )
+
+        # sort everything to put the nan at the end before the next loop
+        index = jnp.argsort(repertoire_fitnesses, axis=1)
+        repertoire_fitnesses = jnp.take_along_axis(repertoire_fitnesses, index, axis=1)
+        index = jnp.repeat(
+            jnp.expand_dims(index, axis=2), repertoire_descriptors.shape[2], axis=2
+        )
+        repertoire_descriptors = jnp.take_along_axis(
+            repertoire_descriptors, index, axis=1
+        )
+
+        # set up number of evaluations
+        extra_scores = {}
+        extra_scores["num_evaluations"] = jnp.concatenate(
             [
-                repertoire_fitnesses,
-                new_eval_fitnesses[num_indivs:],
+                repertoire.evaluations_depth + 1,
+                num_samples * jnp.ones((batch_size)),
             ],
             axis=0,
         )
-        previous_eval_descriptors = jnp.concatenate(
-            [
-                repertoire_descriptors,
-                new_eval_descriptors[num_indivs:],
-            ],
-            axis=0,
-        )
-        previous_eval_weights = jnp.concatenate(
-            [repertoire_evaluations, jnp.full(batch_size, 0)],
-            axis=0,
-        )
 
-        # compute average fitnesses for repertoire indivs
-        all_fitnesses = jnp.concatenate(
-            [new_eval_fitnesses, previous_eval_fitnesses], axis=0
+        # finally concatenate everything for addition
+        all_genotypes = jax.tree_util.tree_map(
+            lambda x, y: jnp.concatenate([x, y], axis=0),
+            genotypes,
+            repertoire.genotypes_depth,
         )
-        weights = jnp.concatenate([new_eval_weights, previous_eval_weights], axis=0)
-        all_fitnesses = jnp.reshape(all_fitnesses, (2, total_size))
-        weights = jnp.reshape(weights, (2, total_size))
-        fitnesses = jnp.average(all_fitnesses, axis=0, weights=weights).squeeze()
-        fitnesses = jnp.where(fitnesses != fitnesses, -jnp.inf, fitnesses)  # filter nan
+        all_fitnesses = jnp.concatenate([fitnesses, repertoire_fitnesses], axis=0)
+        all_descriptors = jnp.concatenate([descriptors, repertoire_descriptors], axis=0)
 
-        # compute average descriptors for repertoire indivs
-        all_descriptors = jnp.concatenate(
-            [new_eval_descriptors, previous_eval_descriptors], axis=0
-        )
-        weights = jnp.concatenate([new_eval_weights, previous_eval_weights], axis=0)
-        weights = jnp.repeat(
-            weights,
-            new_eval_descriptors.shape[1],
-            total_repeat_length=2 * total_size * new_eval_descriptors.shape[1],
-        )
-        all_descriptors = jnp.reshape(all_descriptors, (2, total_size, -1))
-        weights = jnp.reshape(weights, (2, total_size, -1))
-        descriptors = jnp.average(all_descriptors, axis=0, weights=weights).squeeze()
-        descriptors = jnp.where(
-            descriptors != descriptors, 0, descriptors
-        )  # filter nan
-
-        # Set up number of evaluations
-        extra_scores["num_evaluations"] = previous_eval_weights + 1
-
-        return all_genotypes, fitnesses, descriptors, extra_scores, random_key
+        return all_genotypes, all_fitnesses, all_descriptors, extra_scores, random_key
 
     @partial(jax.jit, static_argnames=("self",))
     def init(
@@ -148,7 +205,7 @@ class ArchiveSampling(MAPElitesDepth):
         genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
-    ) -> Tuple[Repertoire, Optional[EmitterState], RNGKey]:
+    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], RNGKey]:
         """
         Initialize a Map-Elites grid with an initial population of genotypes. Requires
         the definition of centroids that can be computed with any method such as
@@ -170,22 +227,39 @@ class ArchiveSampling(MAPElitesDepth):
             descriptors,
             extra_scores,
             random_key,
-        ) = self._scoring_function(genotypes, random_key)
-        extra_scores["num_evaluations"] = jnp.full(fitnesses.shape[0], 1)
+        ) = multi_sample_scoring_function(
+            genotypes, random_key, self._scoring_function, self._offspring_num_samples
+        )
+        extra_scores["num_evaluations"] = jnp.full(
+            fitnesses.shape[0], self._offspring_num_samples
+        )
+
+        # extend all evaluations vector to teh good shape with jnp.nan
+        fitnesses = jnp.pad(
+            fitnesses,
+            ((0, 0), (0, self._max_total_evals - self._offspring_num_samples)),
+            "constant",
+            constant_values=jnp.nan,
+        )
+        descriptors = jnp.pad(
+            descriptors,
+            ((0, 0), (0, self._max_total_evals - self._offspring_num_samples), (0, 0)),
+            "constant",
+            constant_values=jnp.nan,
+        )
 
         # init repertoire
-        repertoire = EvaluationsDeepMapElitesRepertoire.init(
+        repertoire = self._init_repertoire(
             genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
             extra_scores=extra_scores,
             centroids=centroids,
-            depth=self._depth,
         )
+
         # get initial state of the emitter
         emitter_state, random_key = self._emitter.init(
-            init_genotypes=genotypes,
-            random_key=random_key,
+            init_genotypes=genotypes, random_key=random_key
         )
 
         # update emitter state
@@ -193,8 +267,8 @@ class ArchiveSampling(MAPElitesDepth):
             emitter_state=emitter_state,
             repertoire=repertoire,
             genotypes=genotypes,
-            fitnesses=fitnesses,
-            descriptors=descriptors,
+            fitnesses=self._fitness_extractor(fitnesses),
+            descriptors=self._descriptor_extractor(descriptors),
             extra_scores=extra_scores,
         )
 
@@ -203,10 +277,10 @@ class ArchiveSampling(MAPElitesDepth):
     @partial(jax.jit, static_argnames=("self",))
     def update(
         self,
-        repertoire: Repertoire,
+        repertoire: MapElitesRepertoire,
         emitter_state: Optional[EmitterState],
         random_key: RNGKey,
-    ) -> Tuple[Repertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], Metrics, RNGKey]:
         """
         Performs one iteration of the Archive-Sampling algorithm, re-evaluating
         the content of the repertoire before each generation.
@@ -235,14 +309,22 @@ class ArchiveSampling(MAPElitesDepth):
             descriptors,
             extra_scores,
             random_key,
-        ) = self._scoring_repertoire_offspring(repertoire, genotypes, random_key)
+        ) = self._scoring_repertoire_offspring(
+            repertoire, genotypes, self._offspring_num_samples, random_key
+        )
 
         # empty repertoire
         total_evaluations = repertoire.total_evaluations
         repertoire = repertoire.empty()
 
         # add everything back to the archive
-        repertoire = repertoire.add(all_genotypes, descriptors, fitnesses, extra_scores)
+        repertoire = self._add_repertoire(
+            repertoire=repertoire,
+            genotypes=all_genotypes,
+            descriptors=descriptors,
+            fitnesses=fitnesses,
+            extra_scores=extra_scores,
+        )
 
         # set up the total number of evaluations
         total_indivs = jax.tree_util.tree_leaves(all_genotypes)[0].shape[0]
@@ -254,8 +336,10 @@ class ArchiveSampling(MAPElitesDepth):
             emitter_state=emitter_state,
             repertoire=repertoire,
             genotypes=genotypes,
-            fitnesses=fitnesses[total_indivs - batch_size :],
-            descriptors=descriptors[total_indivs - batch_size :],
+            fitnesses=self._fitness_extractor(fitnesses[total_indivs - batch_size :]),
+            descriptors=self._descriptor_extractor(
+                descriptors[total_indivs - batch_size :]
+            ),
             extra_scores=extra_scores,
         )
 

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from qdax.core.containers.mapelites_repertoire import get_cells_indices
 from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype, RNGKey
 
-from core.containers.depth_repertoire import DeepMapElitesRepertoire
+from core.containers.mapelites_depth_repertoire import DeepMapElitesRepertoire
 
 
 class DeepGridRepertoire(DeepMapElitesRepertoire):
@@ -84,7 +84,9 @@ class DeepGridRepertoire(DeepMapElitesRepertoire):
         return final_indices
 
     @partial(jax.jit, static_argnames=("num_samples",))
-    def sample(self, random_key: RNGKey, num_samples: int) -> Tuple[Genotype, RNGKey]:
+    def _sample_indices(
+        self, random_key: RNGKey, num_samples: int
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, RNGKey]:
         """
         Sample elements in the grid.
         For each sample, choose a random cell and return a random individual of this
@@ -130,14 +132,58 @@ class DeepGridRepertoire(DeepMapElitesRepertoire):
         )
         sample_indivs = sample_indivs.ravel()
 
-        # Get corresponding genotypes
+        # Get corresponding indices
         sample_indices = sample_cells * self.dims.shape[0] + sample_indivs
+        return sample_cells, sample_indices, random_key
+
+    @partial(jax.jit, static_argnames=("num_samples",))
+    def sample(self, random_key: RNGKey, num_samples: int) -> Tuple[Genotype, RNGKey]:
+        """
+        Sample elements in the grid.
+        For each sample, choose a random cell and return a random individual of this
+        cell fitness-proportionally.
+
+        Args:
+            random_key: a jax PRNG random key
+            num_samples: the number of elements to be sampled
+
+        Returns:
+            samples: a batch of genotypes sampled in the repertoire
+            random_key: an updated jax PRNG random key
+        """
+
+        _, sample_indices, random_key = self._sample_indices(random_key, num_samples)
         samples = jax.tree_map(
             lambda x: x[sample_indices],
             self.genotypes_depth,
         )
-
         return samples, random_key
+
+    @partial(jax.jit, static_argnames=("num_samples",))
+    def sample_with_descs(
+        self, random_key: RNGKey, num_samples: int
+    ) -> Tuple[Genotype, Descriptor, RNGKey]:
+        """Sample elements in the repertoire and return both their
+        genotypes, descriptors and fitnesses.
+
+        Args:
+            random_key: a jax PRNG random key
+            num_samples: the number of elements to be sampled
+
+        Returns:
+            samples: a batch of genotypes sampled in the repertoire
+            descriptors: the corresponding descriptors
+            random_key: an updated jax PRNG random key
+        """
+
+        _, sample_indices, random_key = self._sample_indices(random_key, num_samples)
+        samples = jax.tree_util.tree_map(
+            lambda x: x[sample_indices],
+            self.genotypes_depth,
+        )
+        descriptors = self.descriptors_depth[sample_indices]
+
+        return samples, descriptors, random_key
 
     @partial(jax.jit, static_argnames=("num_samples",))
     def sample_all_cells(
@@ -195,7 +241,7 @@ class DeepGridRepertoire(DeepMapElitesRepertoire):
         self,
         batch_of_indices: jnp.ndarray,
         random_key: RNGKey,
-    ) -> Tuple[jnp.ndarray, RNGKey]:
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, RNGKey]:
         """
         Sub-method for add(). Return indices to place each new indiv in the grid.
         WARNING: batch_of_indices should have already been filtered to contain
@@ -257,7 +303,7 @@ class DeepGridRepertoire(DeepMapElitesRepertoire):
             out_of_bound,
         )
 
-        return final_batch_of_indices, random_key
+        return final_batch_of_indices, batch_of_indices, random_key
 
     @jax.jit
     def add(
@@ -300,7 +346,7 @@ class DeepGridRepertoire(DeepMapElitesRepertoire):
 
         # Get final indices of individuals added to the depth of the grid
         # (i.e. indivs in: genotypes_depth, fitnesses_depth, descriptors_depth)
-        final_batch_of_indices, random_key = self._place_indivs(
+        final_batch_of_indices, _, random_key = self._place_indivs(
             batch_of_indices, random_key
         )
 

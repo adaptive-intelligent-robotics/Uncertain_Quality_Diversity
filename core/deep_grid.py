@@ -1,4 +1,3 @@
-"""Core components of the MAP-Elites algorithm."""
 from __future__ import annotations
 
 import os
@@ -6,12 +5,13 @@ from functools import partial
 from typing import Optional, Tuple
 
 import jax
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.core.emitters.emitter import EmitterState
 from qdax.types import Centroid, Genotype, Metrics, RNGKey
 
 from core.containers.deep_grid_repertoire import DeepGridRepertoire
-from core.containers.mapelites_repertoire import MapElitesRepertoire
-from core.incell_stochasticity_utils import metrics_incell_random_wrapper
+
+# from qdax.core.incell_stochasticity_utils import metrics_incell_random_wrapper
 from core.map_elites_depth import MAPElitesDepth
 
 # Limit CPU usage for HPC
@@ -28,7 +28,7 @@ class DeepGrid(MAPElitesDepth):
     @partial(jax.jit, static_argnames=("self"))
     def init(
         self,
-        init_genotypes: Genotype,
+        genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
     ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], RNGKey]:
@@ -38,7 +38,7 @@ class DeepGrid(MAPElitesDepth):
         such as CVT or Euclidean mapping.
 
         Args:
-            init_genotypes: initial genotypes, pytree in which leaves
+            genotypes: initial genotypes, pytree in which leaves
                 have shape (batch_size, num_features)
             centroids: tesselation centroids of shape (batch_size, num_descriptors)
             random_key: a random key used for stochastic operations.
@@ -47,11 +47,11 @@ class DeepGrid(MAPElitesDepth):
             initialized deep MAP-Elite repertoire with the initial state of the emitter.
         """
         fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            init_genotypes, random_key
+            genotypes, random_key
         )
 
         repertoire, random_key = DeepGridRepertoire.init(
-            genotypes=init_genotypes,
+            genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
             extra_scores=extra_scores,
@@ -61,14 +61,14 @@ class DeepGrid(MAPElitesDepth):
         )
         # get initial state of the emitter
         emitter_state, random_key = self._emitter.init(
-            init_genotypes=init_genotypes, random_key=random_key
+            init_genotypes=genotypes, random_key=random_key
         )
 
         # update emitter state
         emitter_state = self._emitter.state_update(
             emitter_state=emitter_state,
             repertoire=repertoire,
-            genotypes=init_genotypes,
+            genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
             extra_scores=extra_scores,
@@ -129,11 +129,12 @@ class DeepGrid(MAPElitesDepth):
         )
 
         # update the metrics
-        metrics, random_key = metrics_incell_random_wrapper(
-            repertoire=repertoire,
-            random_key=random_key,
-            metrics_function=self._metrics_function,
-            depth=self._depth,
-        )
+        metrics = self._metrics_function(repertoire)
+        # metrics, random_key = metrics_incell_random_wrapper(
+        #    repertoire=repertoire,
+        #    random_key=random_key,
+        #    metrics_function=self._metrics_function,
+        #    depth=self._depth,
+        # )
 
         return repertoire, emitter_state, metrics, random_key

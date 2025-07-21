@@ -3,106 +3,15 @@ from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, RNGKey
 
-from core.containers.mapelites_repertoire import MapElitesRepertoire
-
-
-@partial(jax.jit, static_argnames=("num_samples"))
-def dummy_extra_scores_extractor(
-    extra_scores: ExtraScores,
-    num_samples: int,
-) -> ExtraScores:
-    """
-    Extract the final extra scores of a policy from multiple samples of
-    the same policy in the environment.
-    This Dummy implementation just return the full concatenate extra_score
-    of all samples without extra computation.
-
-    Args:
-        extra_scores: extra scores of the samples
-        num_samples: the number of samples used
-
-    Returns:
-        the new extra scores after extraction
-    """
-    return extra_scores
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "scoring_fn",
-        "num_samples",
-        "extra_scores_extractor",
-        "use_median",
-    ),
+from core.sampling import (
+    dummy_extra_scores_extractor,
+    median,
+    multi_sample_scoring_function,
+    std,
 )
-def sampling(
-    policies_params: Genotype,
-    random_key: RNGKey,
-    scoring_fn: Callable[
-        [Genotype, RNGKey],
-        Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
-    ],
-    num_samples: int,
-    extra_scores_extractor: Callable[
-        [ExtraScores, int], ExtraScores
-    ] = dummy_extra_scores_extractor,
-    use_median: bool = False,
-) -> Tuple[Fitness, Fitness, Descriptor, Descriptor, ExtraScores, RNGKey]:
-    """
-    Wrap scoring_function to perform sampling.
-
-    Args:
-        policies_params: policies to evaluate
-        random_key
-        scoring_fn: scoring function used for evaluation
-        num_samples
-        extra_scores_extractor: function to extract the extra_scores from
-            multiple samples of the same policy.
-        use_median: use the median instead of average to compute final score.
-
-    Returns:
-        The new fitness and descriptor of the individuals
-        The fitness and descriptor variance of the individuals
-        The extra_score extract from samples with extra_scores_extractor
-        A new random key
-    """
-
-    random_key, subkey = jax.random.split(random_key)
-    keys = jax.random.split(subkey, num=num_samples)
-
-    # evaluate
-    sample_scoring_fn = jax.vmap(scoring_fn, (None, 0), 1)
-    all_fitnesses, all_descriptors, all_extra_scores, _ = sample_scoring_fn(
-        policies_params, keys
-    )
-
-    # compute new results
-    if use_median:
-        descriptors = jnp.median(all_descriptors, axis=1)
-        fitnesses = jnp.median(all_fitnesses, axis=1)
-    else:
-        descriptors = jnp.average(all_descriptors, axis=1)
-        fitnesses = jnp.average(all_fitnesses, axis=1)
-
-    # compute variance
-    descriptors_var = jnp.mean(jnp.nanstd(all_descriptors, axis=1), axis=1)
-    fitnesses_var = jnp.nanstd(all_fitnesses, axis=1)
-
-    # extract extra scores and add number of evaluations to it
-    extra_scores = extra_scores_extractor(all_extra_scores, num_samples)
-    extra_scores["num_evaluations"] = jnp.full(fitnesses.shape[0], num_samples)
-
-    return (
-        fitnesses,
-        fitnesses_var,
-        descriptors,
-        descriptors_var,
-        extra_scores,
-        random_key,
-    )
 
 
 @partial(
@@ -110,8 +19,12 @@ def sampling(
     static_argnames=(
         "scoring_fn",
         "num_reevals",
+        "scan_size",
+        "fitness_extractor",
+        "fitness_reproducibility_extractor",
+        "descriptor_extractor",
+        "descriptor_reproducibility_extractor",
         "extra_scores_extractor",
-        "use_median",
     ),
 )
 def reevaluation_function(
@@ -123,11 +36,17 @@ def reevaluation_function(
         Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
     ],
     num_reevals: int,
+    scan_size: int,
+    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray] = std,
+    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
+    descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray] = std,
     extra_scores_extractor: Callable[
         [ExtraScores, int], ExtraScores
     ] = dummy_extra_scores_extractor,
-    use_median: bool = False,
 ) -> Tuple[
+    MapElitesRepertoire,
+    MapElitesRepertoire,
     MapElitesRepertoire,
     MapElitesRepertoire,
     MapElitesRepertoire,
@@ -143,40 +62,109 @@ def reevaluation_function(
         metric_repertoire: repertoire used to compute reeval stats, allow to use a
             different type of container than the one from the algorithm (in most cases
             just set to the same as repertoire).
-        random_key
-        scoring_fn
-        num_reevals
-        extra_scores_extractor: function to average the extra_scores of the samples.
-        use_median: use the median instead of average to compute final score.
+        random_key: JAX random key.
+        scoring_fn: scoring function used for evaluation.
+        num_reevals: number of samples to generate for each individual.
+        scan_size: allow to split the reevaluations in multiple batch in case the
+            memory is limited.
+                fitness_extractor: function to extract the final fitness from
+            multiple samples of the same policy.
+                fitness_reproducibility_extractor: function to extract the fitness
+            reproducibility from multiple samples of the same policy.
+        descriptor_extractor: function to extract the final descriptor from
+            multiple samples of the same policy.
+                descriptor_reproducibility_extractor: function to extract the descriptor
+            reproducibility from multiple samples of the same policy.
+        extra_scores_extractor: function to extract the extra_scores from
+            multiple samples of the same policy.
     Returns:
-        The reevaluated container and a new random key.
+        A container with reevaluated fitness and descriptor.
+        A container with reevaluated fitness only.
+        A container with reevaluated descriptor only.
+        A non-reevaluated container with reproducibility in fitness.
+        A reevaluated container with reproducibility in fitness.
+        A non-reevaluated container with reproducibility in descriptor.
+        A reevaluated container with reproducibility in descriptor.
+        A random key.
     """
 
+    # If no reevaluations, return copies of the original container
     if num_reevals == 0:
-        return repertoire, repertoire, repertoire, repertoire, repertoire, random_key
+        return (
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            repertoire,
+            random_key,
+        )
 
-    # Eval
-    (
-        fitnesses,
-        fitnesses_var,
-        descriptors,
-        descriptors_var,
-        extra_scores,
-        random_key,
-    ) = sampling(
-        policies_params=repertoire.genotypes,
-        random_key=random_key,
-        scoring_fn=scoring_fn,
-        num_samples=num_reevals,
-        extra_scores_extractor=extra_scores_extractor,
-        use_median=use_median,
-    )
+    policies_params = repertoire.genotypes
+
+    # If no need for scan, call the sampling function
+    if scan_size == 0:
+        (
+            all_fitnesses,
+            all_descriptors,
+            all_extra_scores,
+            random_key,
+        ) = multi_sample_scoring_function(
+            policies_params=policies_params,
+            random_key=random_key,
+            scoring_fn=scoring_fn,
+            num_samples=num_reevals,
+        )
+    else:
+        num_loops = num_reevals // scan_size
+
+        def _sampling_scan(
+            random_key: RNGKey,
+            unused: Tuple[()],
+        ) -> Tuple[Tuple[RNGKey], Tuple[Fitness, Descriptor, ExtraScores]]:
+            (
+                all_fitnesses,
+                all_descriptors,
+                all_extra_scores,
+                random_key,
+            ) = multi_sample_scoring_function(
+                policies_params=policies_params,
+                random_key=random_key,
+                scoring_fn=scoring_fn,
+                num_samples=scan_size,
+            )
+            return (random_key), (
+                all_fitnesses,
+                all_descriptors,
+                all_extra_scores,
+            )
+
+        (random_key), (
+            all_fitnesses,
+            all_descriptors,
+            all_extra_scores,
+        ) = jax.lax.scan(_sampling_scan, (random_key), (), length=num_loops)
+        all_fitnesses = jnp.hstack(all_fitnesses)
+        all_descriptors = jnp.hstack(all_descriptors)
+
+    # Extract the final scores
+    extra_scores = extra_scores_extractor(all_extra_scores, num_reevals)
+    fitnesses = fitness_extractor(all_fitnesses)
+    fitnesses_reproducibility = fitness_reproducibility_extractor(all_fitnesses)
+    descriptors = descriptor_extractor(all_descriptors)
+    descriptors_reproducibility = descriptor_reproducibility_extractor(all_descriptors)
+
+    # WARNING: in the case of descriptors_reproducibility, take average over dimensions
+    descriptors_reproducibility = jnp.average(descriptors_reproducibility, axis=-1)
 
     # Set -inf fitness for all unexisting indivs
     fitnesses = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses)
-    fitnesses_var = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses_var)
-    descriptors_var = jnp.where(
-        repertoire.fitnesses == -jnp.inf, -jnp.inf, descriptors_var
+    fitnesses_reproducibility = jnp.where(
+        repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses_reproducibility
+    )
+    descriptors_reproducibility = jnp.where(
+        repertoire.fitnesses == -jnp.inf, -jnp.inf, descriptors_reproducibility
     )
 
     # Fill-in reeval repertoire
@@ -206,28 +194,49 @@ def reevaluation_function(
         extra_scores,
     )
 
-    # Fill-in fit_var repertoire
-    fit_var_repertoire = metric_repertoire.empty()
-    fit_var_repertoire = fit_var_repertoire.add(
+    # Fill-in fit_reproducibility repertoire
+    fit_reproducibility_repertoire = metric_repertoire.empty()
+    fit_reproducibility_repertoire = fit_reproducibility_repertoire.add(
         repertoire.genotypes,
         repertoire.descriptors,
-        fitnesses_var,
+        fitnesses_reproducibility,
         extra_scores,
     )
 
-    # Fill-in desc_var repertoire
-    desc_var_repertoire = metric_repertoire.empty()
-    desc_var_repertoire = desc_var_repertoire.add(
+    # Fill-in reeval_fit_reproducibility repertoire
+    reeval_fit_reproducibility_repertoire = metric_repertoire.empty()
+    reeval_fit_reproducibility_repertoire = reeval_fit_reproducibility_repertoire.add(
         repertoire.genotypes,
-        repertoire.descriptors,
-        descriptors_var,
+        descriptors,
+        fitnesses_reproducibility,
         extra_scores,
     )
+
+    # Fill-in desc_reproducibility repertoire
+    desc_reproducibility_repertoire = metric_repertoire.empty()
+    desc_reproducibility_repertoire = desc_reproducibility_repertoire.add(
+        repertoire.genotypes,
+        repertoire.descriptors,
+        descriptors_reproducibility,
+        extra_scores,
+    )
+
+    # Fill-in reeval_desc_reproducibility repertoire
+    reeval_desc_reproducibility_repertoire = metric_repertoire.empty()
+    reeval_desc_reproducibility_repertoire = reeval_desc_reproducibility_repertoire.add(
+        repertoire.genotypes,
+        descriptors,
+        descriptors_reproducibility,
+        extra_scores,
+    )
+
     return (
         reeval_repertoire,
         fit_reeval_repertoire,
         desc_reeval_repertoire,
-        fit_var_repertoire,
-        desc_var_repertoire,
+        fit_reproducibility_repertoire,
+        reeval_fit_reproducibility_repertoire,
+        desc_reproducibility_repertoire,
+        reeval_desc_reproducibility_repertoire,
         random_key,
     )

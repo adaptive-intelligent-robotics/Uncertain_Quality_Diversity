@@ -1,12 +1,10 @@
-"""Core components of the MAP-Elites algorithm."""
 from __future__ import annotations
 
 from functools import partial
 from typing import Callable, Optional, Tuple
 
 import jax
-
-from qdax.core.containers.repertoire import Repertoire
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.core.emitters.emitter import Emitter, EmitterState
 from qdax.core.map_elites import MAPElites
 from qdax.types import (
@@ -19,7 +17,7 @@ from qdax.types import (
     RNGKey,
 )
 
-from core.containers.depth_repertoire import DeepMapElitesRepertoire
+from core.containers.mapelites_depth_repertoire import DeepMapElitesRepertoire
 
 
 class MAPElitesDepth(MAPElites):
@@ -33,7 +31,7 @@ class MAPElitesDepth(MAPElites):
             [Genotype, RNGKey], Tuple[Fitness, Descriptor, ExtraScores, RNGKey]
         ],
         emitter: Emitter,
-        metrics_function: Callable[[Repertoire], Metrics],
+        metrics_function: Callable[[MapElitesRepertoire], Metrics],
         depth: int,
     ) -> None:
         self._scoring_function = scoring_function
@@ -47,7 +45,7 @@ class MAPElitesDepth(MAPElites):
         genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
-    ) -> Tuple[Repertoire, Optional[EmitterState], RNGKey]:
+    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], RNGKey]:
         """
         Initialize a deep Map-Elites grid with an initial population of genotypes.
         Requires the definition of centroids that can be computed with any method
@@ -76,8 +74,7 @@ class MAPElitesDepth(MAPElites):
         )
         # get initial state of the emitter
         emitter_state, random_key = self._emitter.init(
-            init_genotypes=genotypes,
-            random_key=random_key,
+            init_genotypes=genotypes, random_key=random_key
         )
 
         # update emitter state
