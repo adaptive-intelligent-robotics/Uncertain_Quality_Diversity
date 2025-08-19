@@ -30,13 +30,14 @@ On top of all the algorithms already included in QDax, this repository provides 
 It also provides the code for the following baselines:
 - ME-Random: a variant of ME that generates random offspring instead of selecting parents from the grid.
 - ME with a depth: a variant of ME that stores $d$ solutions per cell of the grid, $d$ being the depth. This is not expected to perform differently from ME, as the final returned grid only contains the top layer, it is only provided to faciliate later developments.
-- Adaptive-Sampling: a jax-compatible implementation of the first UQD algorithm proposed in [Map-elites for noisy domains by adaptive sampling](https://dl.acm.org/doi/abs/10.1145/3319619.3321904?casa_token=CJVMQp-r43kAAAAA:jFHeZl4uSZFriJOJi60xCAW1_X1e7BtKgCFm_9J4gTUe3SyxRDL1MsuLDLssO35GRY1LeTVPINQ). Note that this algorithm is intrinsically non-parallelisable because part of the evaluations are performed sequentially during the addition to the archive. While this code is written in Jax, it follows the original algorithm and is thus sequential and as a consequence was slower than all other algortihms. We recommand running this specific algorithm on CPU as it induces many data tranferts between GPU and CPU.
+- Adaptive-Sampling: a jax-compatible implementation of the first UQD algorithm proposed in [Map-elites for noisy domains by adaptive sampling](https://dl.acm.org/doi/abs/10.1145/3319619.3321904?casa_token=CJVMQp-r43kAAAAA:jFHeZl4uSZFriJOJi60xCAW1_X1e7BtKgCFm_9J4gTUe3SyxRDL1MsuLDLssO35GRY1LeTVPINQ). Note that this algorithm is intrinsically non-parallelisable because part of the evaluations are performed sequentially during the addition to the archive. While this code is written in Jax, it follows the original algorithm and is thus sequential and as a consequence is slower than all other algortihms. We recommand running this specific algorithm on CPU as it induces many data tranferts between GPU and CPU.
 
 ### Metrics
 
 This repository also provides implementations for the UQD metrics as follow:
-- reevaluation of the archive, either using the average or the median, giving back Corrected repertoire and Variance repertoire
-- reevaluation of the archive in the specific case of Deep-Grid using in-cell selector, either using the average or the median, giving back Corrected repertoire and Variance repertoire
+- Corrected Repertoire to compute Corrected Metrics: get the groundth truth fitness and descriptor of all solutions in the current repertoire and place them in a new repertoire called Corrected Reperoire. To evaluate the ground truth, use directly the real value for tasks where it is accessible (for example optimisation tasks), or approximate it using N reevaluations for tasks where it cannot be easily acess (for example complex robotics tasks with initial configuration noise).
+- Variance Repertoire to compute Reproducibility Metrics: get the reproducibility of all solutions and store it as the fitness in the Repertoire, if not available approximate it using the same N reevaluation as the Corrected Repertoire.
+- Cell-aware Corrected Repertoire to compute Corrected Metrics: specific implementation of the Corrected Metrics for the Deep-Grid algorithm, using cell-selector, as defined in its original paper.
 
 ### Tasks
 
@@ -57,8 +58,9 @@ This repository builds on QDax and follows the same structure:
 - `analysis` contains the files necessary to plot the graphs used in the paper
 - `singularity` contains all the files necessary to build and execute a singularity container to reproduce the paper results.
 
+## Running the code
 
-## Requirements
+### Requirements
 
 To run the code in this repository, you would need the libraries given in `requirement.txt`. In particular, you would need the QDax library, as this repository is built on top of it.
 To install all packages directly on your computer, you can run:
@@ -69,22 +71,47 @@ pip install -r requirements.txt
 
 However, to avoid version issues, we recommend using a virtual machine, a pyenv, or a singularity container (we provide instructions for singularity below).
 
-## Running the code
+### Running the code
 
-To run an algorithm from the paper, you would need to choose its container and its emitter. For example, to run Archive-Sampling, you would use an Archive-Sampling container (of depth `2` as in the paper) with a Mixing (standard) emitter.
-For example, to run it for `1000` generations on the `ant_omni` task, with sampling-size `4096` you would run:
+To run any algorithm, you would need to choose its different components:
+1. Container: parameter `--container`, for example `Extract-MAP-Elites` or `Archive-Sampling`.
+2. Emitter: parameter `--emitter`, most UQD algorithm do not modify the emitter.
+3. Specific parameters: most UQD algorihtm uses the `--depth` and `--num-samples` parameters for example.
 
+You would also need to specify a sampling-size (i.e. an evaluation budget per evaluations), using the `--sampling-size` argument and a number of generation, using the `--num-iterations` arguments. To change the environment, use the parameter `--env-name`, by default, it will run a Redundant Arm task with Gaussian Fitness.
+
+For example, to run Extract-MAP-Elites with the same parameters as the paper:
 ```
-python3 main.py --container Archive-Sampling --emitter Mixing --num-iterations 1000 --sampling-size 4096 --env-name ant_omni
+python3 main.py --num-iterations 1000 --sampling-size 4096 --container Extract-MAP-Elites --depth 8 --num-samples 2
 ```
 
-To run the analysis of the number of reevaluation provided in the appendix of [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985), you can run directly the corresponding main file:
+Here are more details on where to find the list of all available configurations:
+- Environments: `environments_manager/set_up_environment.py` list all available environments at the top.
+- Containers: `set_up_container.py` list all available containers in `CONTAINER_LIST`.
+- Emitters: `set_up_emitter.py` list all available emitters in `EMITTER_LIST`.
+- Parameters: `main.py` list all available parameters in `0. Input` section in teh argparse definition.
 
-```
-python3 main_reeval_tunning.py
-```
+### Parameters for standard algorithms
 
-## Using the singularity containers
+Here are the standard configuration of UQD algorithms:
+
+- ME-Sampling: `--container MAP-Elites --num-samples 32`
+- ME-Sampling-Reprod: `--container MAP-Elites-Sampling-Reprod --num-samples 32`
+- Adaptive-Sampling: `--container Adaptive-Sampling --depth 10`
+- Deep-Grid: `--container Deep-Grid --depth 32`
+- Archive-Sampling (AS): `--container Archive-Sampling --depth 2 --num-samples 2`
+- AS-Reprod: `--container Archive-Sampling-Reprod --depth 2 --num-samples 2`
+- Parallel-Adaptive-Sampling: `--container Parallel-Adaptive-Sampling --depth 2 --pas-max-samples 8`
+- ME-LS: `--container MAP-Elites-Low-Spread --num-samples 32`
+- ME-Weighted: `--container MAP-Elites-Weighted --num-samples 32`
+- ME-Delta: `--container MAP-Elites-Delta --num-samples 32`
+- AS-Weighted: `--container Archive-Sampling-Weighted --depth 2 --num-samples 2`
+- AS-Delta: `--container Archive-Sampling-Delta --depth 2 --num-samples 2`
+- MOME-R: `--container MOME-Reprod --num-samples 32`
+- Extract-ME: `--container Extract-MAP-Elites --depth 8 --num-samples 2`
+
+
+### Using the singularity containers
 
 This repository also contains the recipe to build a singularity container with all the required libraries.
 This container can either be built as a final container (it would then be an executable file) or as a sandbox container (that can then be used to develop code interactively within the container).
