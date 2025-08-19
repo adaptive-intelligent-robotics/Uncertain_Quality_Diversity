@@ -3,114 +3,14 @@ from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
-from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
-from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, Metrics, RNGKey
-
-from core.sampling import dummy_extra_scores_extractor, median, std
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "depth",
-        "fitness_extractor",
-        "descriptor_extractor",
-    ),
+from qdax.core.containers.repertoire import Repertoire
+from qdax.custom_types import Descriptor, ExtraScores, Fitness, Genotype, RNGKey
+from qdax.utils.sampling import (
+    dummy_extra_scores_extractor,
+    median,
+    multi_sample_scoring_function,
+    std,
 )
-def _incell_metrics(
-    repertoire: MapElitesRepertoire,
-    random_key: RNGKey,
-    depth: int,
-    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
-    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
-) -> Tuple[Genotype, Fitness, Descriptor, RNGKey]:
-    """
-    Compute cell-metrics in stochastic applications.
-
-    Args:
-        repertoire: repertoire to compute metrics for.
-        random_key: JAX random key.
-        depth: depth of the repertoire
-                fitness_extractor: function to extract the final fitness from
-            multiple samples of the same policy.
-        descriptor_extractor: function to extract the final descriptor from
-            multiple samples of the same policy.
-    Returns:
-        The cell-metrics and a new random key
-    """
-
-    # Sample depth fitnesses and descriptors for each cell
-    num_centroids = repertoire.centroids.shape[0]
-    _, all_fitnesses, all_descriptors, random_key = repertoire.sample_all_cells(
-        random_key, depth
-    )
-
-    # Reshape the score
-    all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, depth))
-    all_descriptors = jnp.reshape(all_descriptors, (num_centroids, depth, -1))
-
-    # Extract the final scores
-    fitnesses = fitness_extractor(all_fitnesses)
-    descriptors = descriptor_extractor(all_descriptors)
-
-    return repertoire.genotypes, descriptors, fitnesses, random_key
-
-
-@partial(
-    jax.jit,
-    static_argnames=(
-        "metrics_function",
-        "depth",
-        "fitness_extractor",
-        "descriptor_extractor",
-    ),
-)
-def metrics_incell_wrapper(
-    repertoire: MapElitesRepertoire,
-    random_key: RNGKey,
-    metrics_function: Callable[[MapElitesRepertoire], Metrics],
-    depth: int,
-    fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
-    descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray] = median,
-) -> Tuple[Metrics, RNGKey]:
-    """
-    Perform evaluation of a repertoire in stochastic applications.
-
-    Args:
-        repertoire: repertoire to reevaluate.
-        random_key
-        metrics_function: function to compute metrics of a repertoire
-        depth: depth of the repertoire
-                fitness_extractor: function to extract the final fitness from
-            multiple samples of the same policy.
-        descriptor_extractor: function to extract the final descriptor from
-            multiple samples of the same policy.
-    Returns:
-        The metrics container and a new random key.
-    """
-
-    # Compute the in-cell metrics
-    genotypes, descriptors, fitnesses, random_key = _incell_metrics(
-        repertoire,
-        random_key,
-        depth,
-        fitness_extractor,
-        descriptor_extractor,
-    )
-
-    # Fill-in new repertoire
-    metrics_repertoire = repertoire.empty()
-    metrics_repertoire, random_key = metrics_repertoire.add(
-        genotypes,
-        descriptors,
-        fitnesses,
-        {},
-        random_key,
-    )
-
-    metrics = metrics_function(metrics_repertoire)
-
-    return metrics, random_key
 
 
 @partial(
@@ -128,9 +28,9 @@ def metrics_incell_wrapper(
     ),
 )
 def incell_reevaluation_function(
-    repertoire: MapElitesRepertoire,
+    repertoire: Repertoire,
     random_key: RNGKey,
-    metric_repertoire: MapElitesRepertoire,
+    metric_repertoire: Repertoire,
     scoring_fn: Callable[
         [Genotype, RNGKey],
         Tuple[Fitness, Descriptor, ExtraScores, RNGKey],
@@ -146,13 +46,14 @@ def incell_reevaluation_function(
         [ExtraScores, int], ExtraScores
     ] = dummy_extra_scores_extractor,
 ) -> Tuple[
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
-    MapElitesRepertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
+    Repertoire,
     RNGKey,
 ]:
     """
@@ -189,72 +90,97 @@ def incell_reevaluation_function(
         A random key.
     """
 
+    depth = repertoire.fitnesses_depth.shape[1]
+    num_centroids = repertoire.fitnesses_depth.shape[0]
+
+    # Sample depth fitnesses and descriptors for each cell
+    (
+        _,
+        all_repertoire_fitnesses,
+        all_repertoire_descriptors,
+        random_key,
+    ) = repertoire.sample_all_cells(random_key, depth)
+    repertoire_genotypes = repertoire.genotypes
+    repertoire_fitnesses = fitness_extractor(all_repertoire_fitnesses)
+    repertoire_descriptors = descriptor_extractor(all_repertoire_descriptors)
+
+    # Set -inf fitness for all unexisting indivs
+    mask = repertoire.fitnesses == -jnp.inf
+    repertoire_fitnesses = jnp.where(mask, -jnp.inf, repertoire_fitnesses)
+
+    # Build the incell_repertoire
+    incell_repertoire = metric_repertoire.empty()
+    incell_repertoire = incell_repertoire.add(
+        repertoire_genotypes,
+        repertoire_descriptors,
+        repertoire_fitnesses,
+        {},
+    )
+
     # If no reevaluations, return copies of the original container
     if num_reevals == 0:
         return (
-            repertoire,
-            repertoire,
-            repertoire,
-            repertoire,
-            repertoire,
-            repertoire,
-            repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
+            incell_repertoire,
             random_key,
         )
 
-    (
-        all_genotypes,
-        all_repertoire_fitnesses,
-        _,
-        random_key,
-    ) = repertoire.sample_all_cells(random_key, num_reevals)
-    num_centroids = repertoire.centroids.shape[0]
+    # Resample num_reevals from all cells
+    all_repertoire_genotypes, _, _, random_key = repertoire.sample_all_cells(
+        random_key, num_reevals
+    )
+    all_repertoire_genotypes = jax.tree_util.tree_map(
+        lambda x: jnp.reshape(x, (num_centroids * num_reevals,) + x.shape[2:]),
+        all_repertoire_genotypes,
+    )
 
     # If no need for scan, call the sampling function
     if scan_size == 0:
         (all_fitnesses, all_descriptors, all_extra_scores, random_key) = scoring_fn(
-            all_genotypes,
+            all_repertoire_genotypes,
             random_key,
         )
-        all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
-        all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
     else:
         num_loops = num_reevals // scan_size
 
-        # Reshape genotypes for scan
-        scan_genotypes = jax.tree_util.tree_map(
-            lambda x: jnp.reshape(x, (num_loops, -1, all_genotypes.shape[1])),
-            all_genotypes,
-        )
-
         def _sampling_scan(
-            carry: Tuple[int, RNGKey],
+            random_key: RNGKey,
             unused: Tuple[()],
-        ) -> Tuple[Tuple[int, RNGKey], Tuple[Fitness, Descriptor, ExtraScores]]:
-            counter, random_key = carry
-            genotypes = jax.tree_util.tree_map(lambda x: x[counter], scan_genotypes)
+        ) -> Tuple[Tuple[RNGKey], Tuple[Fitness, Descriptor, ExtraScores]]:
             (
                 all_fitnesses,
                 all_descriptors,
                 all_extra_scores,
                 random_key,
-            ) = scoring_fn(genotypes, random_key)
-            counter += 1
-            return (counter, random_key), (
+            ) = multi_sample_scoring_function(
+                policies_params=all_repertoire_genotypes,
+                random_key=random_key,
+                scoring_fn=scoring_fn,
+                num_samples=scan_size,
+            )
+            return (random_key), (
                 all_fitnesses,
                 all_descriptors,
                 all_extra_scores,
             )
 
-        (_, random_key), (
+        (random_key), (
             all_fitnesses,
             all_descriptors,
             all_extra_scores,
-        ) = jax.lax.scan(_sampling_scan, (0, random_key), (), length=num_loops)
+        ) = jax.lax.scan(_sampling_scan, (random_key), (), length=num_loops)
+        all_fitnesses = jnp.hstack(all_fitnesses)
+        all_descriptors = jnp.hstack(all_descriptors)
 
-        # Get correct output shape
-        all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
-        all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
+    # Get correct output shape
+    all_fitnesses = jnp.reshape(all_fitnesses, (num_centroids, num_reevals))
+    all_descriptors = jnp.reshape(all_descriptors, (num_centroids, num_reevals, -1))
 
     # Extract the final scores
     extra_scores = extra_scores_extractor(all_extra_scores, num_reevals)
@@ -267,32 +193,14 @@ def incell_reevaluation_function(
     descriptors_reproducibility = jnp.average(descriptors_reproducibility, axis=-1)
 
     # Set -inf fitness for all unexisting indivs
-    fitnesses = jnp.where(repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses)
-    fitnesses_reproducibility = jnp.where(
-        repertoire.fitnesses == -jnp.inf, -jnp.inf, fitnesses_reproducibility
-    )
-    descriptors_reproducibility = jnp.where(
-        repertoire.fitnesses == -jnp.inf, -jnp.inf, descriptors_reproducibility
-    )
-
-    # Compute in-cell metrics for other repertoires
-    (
-        original_genotypes,
-        original_descriptors,
-        original_fitnesses,
-        random_key,
-    ) = _incell_metrics(
-        repertoire,
-        random_key,
-        depth,
-        fitness_extractor,
-        descriptor_extractor,
-    )
+    fitnesses = jnp.where(mask, -jnp.inf, fitnesses)
+    fitnesses_reproducibility = jnp.where(mask, -jnp.inf, fitnesses_reproducibility)
+    descriptors_reproducibility = jnp.where(mask, -jnp.inf, descriptors_reproducibility)
 
     # Fill-in reeval repertoire
     reeval_repertoire = metric_repertoire.empty()
     reeval_repertoire = reeval_repertoire.add(
-        original_genotypes,
+        repertoire_genotypes,
         descriptors,
         fitnesses,
         extra_scores,
@@ -301,8 +209,8 @@ def incell_reevaluation_function(
     # Fill-in fit_reeval repertoire
     fit_reeval_repertoire = metric_repertoire.empty()
     fit_reeval_repertoire = fit_reeval_repertoire.add(
-        original_genotypes,
-        original_descriptors,
+        repertoire_genotypes,
+        repertoire_descriptors,
         fitnesses,
         extra_scores,
     )
@@ -310,17 +218,17 @@ def incell_reevaluation_function(
     # Fill-in desc_reeval repertoire
     desc_reeval_repertoire = metric_repertoire.empty()
     desc_reeval_repertoire = desc_reeval_repertoire.add(
-        original_genotypes,
+        repertoire_genotypes,
         descriptors,
-        original_fitnesses,
+        repertoire_fitnesses,
         extra_scores,
     )
 
     # Fill-in fit_reproducibility repertoire
     fit_reproducibility_repertoire = metric_repertoire.empty()
     fit_reproducibility_repertoire = fit_reproducibility_repertoire.add(
-        original_genotypes,
-        original_descriptors,
+        repertoire_genotypes,
+        repertoire_descriptors,
         fitnesses_reproducibility,
         extra_scores,
     )
@@ -328,7 +236,7 @@ def incell_reevaluation_function(
     # Fill-in reeval_fit_reproducibility repertoire
     reeval_fit_reproducibility_repertoire = metric_repertoire.empty()
     reeval_fit_reproducibility_repertoire = reeval_fit_reproducibility_repertoire.add(
-        original_genotypes,
+        repertoire_genotypes,
         descriptors,
         fitnesses_reproducibility,
         extra_scores,
@@ -337,8 +245,8 @@ def incell_reevaluation_function(
     # Fill-in desc_reproducibility repertoire
     desc_reproducibility_repertoire = metric_repertoire.empty()
     desc_reproducibility_repertoire = desc_reproducibility_repertoire.add(
-        original_genotypes,
-        original_descriptors,
+        repertoire_genotypes,
+        repertoire_descriptors,
         descriptors_reproducibility,
         extra_scores,
     )
@@ -346,13 +254,14 @@ def incell_reevaluation_function(
     # Fill-in reeval_desc_reproducibility repertoire
     reeval_desc_reproducibility_repertoire = metric_repertoire.empty()
     reeval_desc_reproducibility_repertoire = reeval_desc_reproducibility_repertoire.add(
-        original_genotypes,
+        repertoire_genotypes,
         descriptors,
         descriptors_reproducibility,
         extra_scores,
     )
 
     return (
+        incell_repertoire,
         reeval_repertoire,
         fit_reeval_repertoire,
         desc_reeval_repertoire,

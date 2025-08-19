@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional, Tuple
 
 import jax
 from qdax.core.emitters.emitter import Emitter, EmitterState
-from qdax.types import (
+from qdax.custom_types import (
     Centroid,
     Descriptor,
     ExtraScores,
@@ -52,7 +52,7 @@ class MAPElites:
     @partial(jax.jit, static_argnames=("self",))
     def init(
         self,
-        init_genotypes: Genotype,
+        genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
     ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], RNGKey]:
@@ -62,7 +62,7 @@ class MAPElites:
         such as CVT or Euclidean mapping.
 
         Args:
-            init_genotypes: initial genotypes, pytree in which leaves
+            genotypes: initial genotypes, pytree in which leaves
                 have shape (batch_size, num_features)
             centroids: tesselation centroids of shape (batch_size, num_descriptors)
             random_key: a random key used for stochastic operations.
@@ -73,28 +73,23 @@ class MAPElites:
         """
         # score initial genotypes
         fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            init_genotypes, random_key
+            genotypes, random_key
         )
 
         # init the repertoire
         repertoire = MapElitesRepertoire.init(
-            genotypes=init_genotypes,
+            genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
-            extra_scores=extra_scores,
             centroids=centroids,
+            extra_scores=extra_scores,
         )
 
         # get initial state of the emitter
         emitter_state, random_key = self._emitter.init(
-            init_genotypes=init_genotypes, random_key=random_key
-        )
-
-        # update emitter state
-        emitter_state = self._emitter.state_update(
-            emitter_state=emitter_state,
+            random_key=random_key,
             repertoire=repertoire,
-            genotypes=init_genotypes,
+            genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
             extra_scores=extra_scores,
@@ -130,7 +125,7 @@ class MAPElites:
         """
 
         # generate offsprings with the emitter
-        genotypes, random_key = self._emitter.emit(
+        genotypes, extra_info, random_key = self._emitter.emit(
             repertoire, emitter_state, random_key
         )
 
@@ -149,7 +144,7 @@ class MAPElites:
             genotypes=genotypes,
             fitnesses=fitnesses,
             descriptors=descriptors,
-            extra_scores=extra_scores,
+            extra_scores={**extra_scores, **extra_info},
         )
 
         # update the metrics

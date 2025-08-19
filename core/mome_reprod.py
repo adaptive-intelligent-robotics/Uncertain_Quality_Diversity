@@ -1,3 +1,4 @@
+"""Core components of the MAP-Elites Low-Spread algorithm."""
 from __future__ import annotations
 
 from functools import partial
@@ -5,10 +6,9 @@ from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from qdax.core.containers.mome_repertoire import MOMERepertoire
 from qdax.core.emitters.emitter import Emitter, EmitterState
 from qdax.core.map_elites import MAPElites
-from qdax.types import (
+from qdax.custom_types import (
     Centroid,
     Descriptor,
     ExtraScores,
@@ -18,8 +18,9 @@ from qdax.types import (
     RNGKey,
 )
 
+from core.containers.mome_reprod_biased_repertoire import MOMEReprodBiasedRepertoire
 from core.containers.mome_reprod_repertoire import MOMEReprodRepertoire
-from core.containers.mome_x_reprod_repertoire import MOMEXReprodRepertoire
+from core.sampling import multi_sample_scoring_function
 
 
 class MOMEReprod(MAPElites):
@@ -32,6 +33,7 @@ class MOMEReprod(MAPElites):
         ],
         emitter: Emitter,
         metrics_function: Callable[[MOMEReprodRepertoire], Metrics],
+        num_samples: int,
         fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
@@ -42,6 +44,7 @@ class MOMEReprod(MAPElites):
         self._scoring_function = scoring_function
         self._emitter = emitter
         self._metrics_function = metrics_function
+        self._num_samples = num_samples
         self._fitness_extractor = fitness_extractor
         self._fitness_reproducibility_extractor = fitness_reproducibility_extractor
         self._descriptor_extractor = descriptor_extractor
@@ -57,7 +60,7 @@ class MOMEReprod(MAPElites):
         genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
-    ) -> Tuple[MOMERepertoire, Optional[EmitterState], RNGKey]:
+    ) -> Tuple[MOMEReprodRepertoire, Optional[EmitterState], RNGKey]:
         """Initialize a MAP-Elites Low-Spread repertoire with an initial
         population of genotypes. Requires the definition of centroids that can
         be computed with any method such as CVT or Euclidean mapping.
@@ -73,13 +76,17 @@ class MOMEReprod(MAPElites):
             state, JAX random key).
         """
         # score initial genotypes
-        fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            genotypes, random_key
+        (
+            fitnesses,
+            descriptors,
+            extra_scores,
+            random_key,
+        ) = multi_sample_scoring_function(
+            genotypes, random_key, self._scoring_function, self._num_samples
         )
-        # jax.debug.print("descriptors {x}", x=descriptors)
 
         if self._biased_sampling:
-            repertoire = MOMEXReprodRepertoire.init(
+            repertoire = MOMEReprodBiasedRepertoire.init(
                 genotypes=genotypes,
                 fitnesses=fitnesses,
                 descriptors=descriptors,
@@ -91,7 +98,6 @@ class MOMEReprod(MAPElites):
                 descriptor_reproducibility_extractor=self._descriptor_reproducibility_extractor,
                 pareto_front_max_length=self._pareto_front_max_length,
             )
-
         else:
             repertoire = MOMEReprodRepertoire.init(
                 genotypes=genotypes,
@@ -107,31 +113,26 @@ class MOMEReprod(MAPElites):
             )
 
         # get initial state of the emitter
-        emitter_state, random_key = self._emitter.init(
-            init_genotypes=genotypes, random_key=random_key
-        )
-
-        # update emitter state
         extracted_descriptors = self._descriptor_extractor(descriptors)
         extracted_fitnesses = self._fitness_extractor(fitnesses)
-        # jax.debug.print("extracted_descriptors {x}", x=extracted_descriptors)
-        emitter_state = self._emitter.state_update(
-            emitter_state=emitter_state,
+        emitter_state, random_key = self._emitter.init(
+            random_key=random_key,
             repertoire=repertoire,
             genotypes=genotypes,
             fitnesses=extracted_fitnesses,
             descriptors=extracted_descriptors,
             extra_scores=extra_scores,
         )
+
         return repertoire, emitter_state, random_key
 
     @partial(jax.jit, static_argnames=("self",))
     def update(
         self,
-        repertoire: MOMERepertoire,
+        repertoire: MOMEReprodRepertoire,
         emitter_state: Optional[EmitterState],
         random_key: RNGKey,
-    ) -> Tuple[MOMERepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[MOMEReprodRepertoire, Optional[EmitterState], Metrics, RNGKey]:
         """
         Performs one iteration of the MAP-Elites algorithm.
         1. A batch of genotypes is sampled in the repertoire and the genotypes
@@ -153,21 +154,25 @@ class MOMEReprod(MAPElites):
         """
 
         # generate offsprings with the emitter
-        genotypes, random_key = self._emitter.emit(
+        genotypes, _, random_key = self._emitter.emit(
             repertoire, emitter_state, random_key
         )
 
         # scores the offsprings
-        fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            genotypes, random_key
+        (
+            fitnesses,
+            descriptors,
+            extra_scores,
+            random_key,
+        ) = multi_sample_scoring_function(
+            genotypes, random_key, self._scoring_function, self._num_samples
         )
-        # jax.debug.print("descriptors {x}", x=descriptors)
 
         # add genotypes in the repertoire
         repertoire = repertoire.add(
             batch_of_genotypes=genotypes,
-            batch_of_descriptors=descriptors,
-            batch_of_fitnesses=fitnesses,
+            batch_of_all_descriptors=descriptors,
+            batch_of_all_fitnesses=fitnesses,
             batch_of_extra_scores=extra_scores,
             fitness_extractor=self._fitness_extractor,
             fitness_reproducibility_extractor=self._fitness_reproducibility_extractor,
@@ -177,7 +182,6 @@ class MOMEReprod(MAPElites):
 
         # update emitter state after scoring is made
         extracted_descriptors = self._descriptor_extractor(descriptors)
-        # jax.debug.print("extracted_descriptors {x}", x=extracted_descriptors)
         extracted_fitnesses = self._fitness_extractor(fitnesses)
         emitter_state = self._emitter.state_update(
             emitter_state=emitter_state,

@@ -17,6 +17,7 @@ def plot_all_archives(
     compare_title: str,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
 ) -> None:
 
     # For each environment
@@ -30,27 +31,45 @@ def plot_all_archives(
         # Get all the corresponding min and max
         min_fitness = None
         max_fitness = None
+        min_reeval_fitness = None
+        max_reeval_fitness = None
         min_fit_var = None
         max_fit_var = None
         min_desc_var = None
         max_desc_var = None
+        min_additional = None
+        max_additional = None
         if min_max_frame is not None:
             env_min_max_frame = min_max_frame[min_max_frame["env"] == env]
             if not env_min_max_frame.empty:
                 min_fitness = env_min_max_frame["min_fitness"][0]
                 max_fitness = env_min_max_frame["max_fitness"][0]
+                min_reeval_fitness = env_min_max_frame["min_reeval_fitness"][0]
+                max_reeval_fitness = env_min_max_frame["max_reeval_fitness"][0]
                 min_fit_var = env_min_max_frame["min_fit_var"][0]
                 max_fit_var = env_min_max_frame["max_fit_var"][0]
                 min_desc_var = env_min_max_frame["min_desc_var"][0]
                 max_desc_var = env_min_max_frame["max_desc_var"][0]
-        min_bd_list = str(env_config_frame["min_bd"][0])[1:-1].split(" ")
-        if "" in min_bd_list:
-            min_bd_list.remove("")
-        max_bd_list = str(env_config_frame["max_bd"][0])[1:-1].split(" ")
-        if "" in max_bd_list:
-            max_bd_list.remove("")
-        min_bd = [float(bd) for bd in min_bd_list]
-        max_bd = [float(bd) for bd in max_bd_list]
+                min_additional = env_min_max_frame["min_additional"][0]
+                max_additional = env_min_max_frame["max_additional"][0]
+        min_bd = [0, 0]
+        if env_config_frame["min_bd"].values[0] != []:
+            if "_" in env_config_frame["min_bd"].values[0]:
+                min_bd_list = str(env_config_frame["min_bd"].values[0]).split("_")
+            else:
+                min_bd_list = str(env_config_frame["min_bd"].values[0])[1:-1].split(" ")
+            if "" in min_bd_list:
+                min_bd_list.remove("")
+            min_bd = [float(bd) for bd in min_bd_list]
+        max_bd = [1, 1]
+        if env_config_frame["max_bd"].values[0] != []:
+            if "_" in env_config_frame["max_bd"].values[0]:
+                max_bd_list = str(env_config_frame["max_bd"].values[0]).split("_")
+            else:
+                max_bd_list = str(env_config_frame["max_bd"].values[0])[1:-1].split(" ")
+            if "" in max_bd_list:
+                max_bd_list.remove("")
+            max_bd = [float(bd) for bd in max_bd_list]
 
         # For each run for this env
         for line in range(env_config_frame.shape[0]):
@@ -90,7 +109,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open non-reevaluated repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Reevaluated repertoire
             try:
@@ -113,8 +133,8 @@ def plot_all_archives(
                         repertoire_fitnesses=fitnesses,
                         minval=min_bd,
                         maxval=max_bd,
-                        vmin=min_fitness,
-                        vmax=max_fitness,
+                        vmin=min_reeval_fitness,
+                        vmax=max_reeval_fitness,
                         repertoire_descriptors=descriptors,
                         ax=ax.flat[1],
                     )
@@ -125,7 +145,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open reeval repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Additional repertoire
             try:
@@ -151,8 +172,8 @@ def plot_all_archives(
                         repertoire_fitnesses=fitnesses,
                         minval=min_bd,
                         maxval=max_bd,
-                        vmin=min_fitness,
-                        vmax=max_fitness,
+                        vmin=min_additional,
+                        vmax=max_additional,
                         repertoire_descriptors=descriptors,
                         ax=ax.flat[2],
                     )
@@ -160,7 +181,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open additional repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Reevaluated fitness repertoire
             try:
@@ -195,7 +217,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open fit-reeval repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Reevaluated desc repertoire
             try:
@@ -231,7 +254,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open desc-reeval repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Variance fitness repertoire
             try:
@@ -265,7 +289,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open fit-var repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Variance desc repertoire
             try:
@@ -299,7 +324,8 @@ def plot_all_archives(
             except Exception:
                 print("\n!!!WARNING!!! Cannot open desc-var repertoire for:")
                 print(env_config_frame.loc[line])
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Finish figure
             plt.tight_layout()

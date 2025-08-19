@@ -1,19 +1,27 @@
 import functools
 from typing import Any, Callable, List, Optional, Union
 
-import brax
-import brax.envs
+import jax.numpy as jnp
+from brax.v1.envs import Env, _envs
+from brax.v1.envs import env as brax_env
+from brax.v1.envs.wrappers import (
+    AutoResetWrapper,
+    EpisodeWrapper,
+    EvalWrapper,
+    VectorWrapper,
+)
 from qdax.environments.base_wrappers import QDEnv, StateDescriptorResetWrapper
 from qdax.environments.bd_extractors import (
     get_feet_contact_proportion,
     get_final_xy_position,
 )
 from qdax.environments.exploration_wrappers import MazeWrapper, TrapWrapper
+from qdax.environments.humanoidtrap import HumanoidTrap
 from qdax.environments.init_state_wrapper import FixedInitialStateWrapper
 from qdax.environments.pointmaze import PointMaze
 from qdax.environments.wrappers import CompletedEvalWrapper
 
-from tasks.hexapod import Hexapod
+from tasks.hexapod import HexapodAngleDiff, HexapodControl
 from tasks.locomotion_wrappers import (
     FeetContactWrapper,
     NoForwardRewardWrapper,
@@ -25,6 +33,7 @@ from tasks.locomotion_wrappers import (
 reward_offset = {
     "pointmaze": 2.3431,
     "anttrap": 3.38,
+    "humanoidtrap": 0.0,
     "antnotrap": 3.38,
     "antmaze": 40.32,
     "ant_omni": 3.0,
@@ -35,11 +44,14 @@ reward_offset = {
     "hopper_uni": 0.9,
     "walker2d_uni": 1.413,
     "hexapod_omni": 3.6,
+    "hexapod_control_omni": 0.0,
+    "hexapod_trap": 3.38,
 }
 
 behavior_descriptor_extractor = {
     "pointmaze": get_final_xy_position,
     "anttrap": get_final_xy_position,
+    "humanoidtrap": get_final_xy_position,
     "antnotrap": get_final_xy_position,
     "antmaze": get_final_xy_position,
     "ant_omni": get_final_xy_position,
@@ -50,13 +62,13 @@ behavior_descriptor_extractor = {
     "hopper_uni": get_feet_contact_proportion,
     "walker2d_uni": get_feet_contact_proportion,
     "hexapod_omni": get_final_xy_position,
+    "hexapod_control_omni": get_final_xy_position,
+    "hexapod_trap": get_final_xy_position,
 }
 
 _qdax_envs = {
     "pointmaze": PointMaze,
-}
-_base_custom_envs = {
-    "hexapod": Hexapod,
+    "humanoid_w_trap": HumanoidTrap,
 }
 
 _qdax_custom_envs = {
@@ -64,6 +76,11 @@ _qdax_custom_envs = {
         "env": "ant",
         "wrappers": [XYPositionWrapper, TrapWrapper],
         "kwargs": [{"minval": [0.0, -8.0], "maxval": [30.0, 8.0]}, {}],
+    },
+    "humanoidtrap": {
+        "env": "humanoid_w_trap",
+        "wrappers": [XYPositionWrapper],
+        "kwargs": [{"minval": [0.0, -8.0], "maxval": [30.0, 8.0]}],
     },
     "antnotrap": {
         "env": "ant",
@@ -111,7 +128,31 @@ _qdax_custom_envs = {
         "wrappers": [XYPositionWrapper],
         "kwargs": [{"minval": [-2.0, -2.0], "maxval": [2.0, 2.0]}],
     },
+    "hexapod_control_omni": {
+        "env": "hexapod_control",
+        "wrappers": [XYPositionWrapper],
+        "kwargs": [{"minval": [-2.0, -2.0], "maxval": [2.0, 2.0]}],
+    },
+    "hexapod_trap": {
+        "env": "hexapod_control",
+        "wrappers": [XYPositionWrapper, TrapWrapper],
+        "kwargs": [{"minval": [0.0, -8.0], "maxval": [30.0, 8.0]}, {}],
+    },
 }
+
+
+class NoResetWrapper(brax_env.Wrapper):
+    """Useless wrapper that just avoid breaking all interface when not using Autoreset."""
+
+    def reset(self, rng: jnp.ndarray) -> brax_env.State:
+        state = self.env.reset(rng)
+        state.info["first_qp"] = state.qp
+        state.info["first_obs"] = state.obs
+        return state
+
+    def step(self, state: brax_env.State, action: jnp.ndarray) -> brax_env.State:
+        state = self.env.step(state, action)
+        return state
 
 
 def create(
@@ -123,26 +164,36 @@ def create(
     eval_metrics: bool = False,
     fixed_init_state: bool = False,
     qdax_wrappers_kwargs: Optional[List] = None,
+    reset_noise_scale: float = 0,
     **kwargs: Any,
-) -> Union[brax.envs.env.Env, QDEnv]:
+) -> Union[Env, QDEnv]:
     """Creates an Env with a specified brax system.
     Please use namespace to avoid confusion between this function and
     brax.envs.create.
     """
 
-    if env_name in brax.envs._envs.keys():
-        env = brax.envs._envs[env_name](legacy_spring=True, **kwargs)
+    if env_name in _envs.keys():
+        env = _envs[env_name](legacy_spring=True, **kwargs)
     elif env_name in _qdax_envs.keys():
         env = _qdax_envs[env_name](**kwargs)
     elif env_name in _qdax_custom_envs.keys():
         base_env_name = _qdax_custom_envs[env_name]["env"]
         if base_env_name == "hexapod":
-            env = Hexapod(
+            env = HexapodAngleDiff(
                 legacy_spring=True,
                 **kwargs,
+                reset_noise_scale=reset_noise_scale,
             )
-        else:
-            env = brax.envs._envs[base_env_name](legacy_spring=True, **kwargs)
+        elif base_env_name == "hexapod_control":
+            env = HexapodControl(
+                legacy_spring=True,
+                **kwargs,
+                reset_noise_scale=reset_noise_scale,
+            )
+        elif base_env_name in _envs.keys():
+            env = _envs[base_env_name](legacy_spring=True, **kwargs)
+        elif base_env_name in _qdax_envs.keys():
+            env = _qdax_envs[base_env_name](**kwargs)  # type: ignore
     else:
         raise NotImplementedError("This environment name does not exist!")
 
@@ -154,30 +205,41 @@ def create(
         else:
             kwargs_list = qdax_wrappers_kwargs
         for wrapper, kwargs in zip(wrappers, kwargs_list):  # type: ignore
+            print("Applying wrapper", wrapper)
             env = wrapper(env, base_env_name, **kwargs)  # type: ignore
 
     if episode_length is not None:
-        env = brax.envs.wrappers.EpisodeWrapper(env, episode_length, action_repeat)
+        print("Applying wrapper EpisodeWrapper")
+        env = EpisodeWrapper(env, episode_length, action_repeat)
     if batch_size:
-        env = brax.envs.wrappers.VectorWrapper(env, batch_size)
+        print("Applying wrapper VectorWrapper")
+        env = VectorWrapper(env, batch_size)
     if fixed_init_state:
         # retrieve the base env
         if env_name not in _qdax_custom_envs.keys():
             base_env_name = env_name
         # wrap the env
+        print("Applying wrapper FixedInitialStateWrapper")
         env = FixedInitialStateWrapper(env, base_env_name=base_env_name)  # type: ignore
     if auto_reset:
-        env = brax.envs.wrappers.AutoResetWrapper(env)
+        print("Applying wrapper AutoresetWrapper")
+        env = AutoResetWrapper(env)
         if env_name in _qdax_custom_envs.keys():
+            print("Applying wrapper StateDescriptorResetWrapper")
             env = StateDescriptorResetWrapper(env)
+    else:
+        print("Applying wrapper NoResetWrapper")
+        env = NoResetWrapper(env)
     if eval_metrics:
-        env = brax.envs.wrappers.EvalWrapper(env)
+        print("Applying wrapper EvalWrapper")
+        env = EvalWrapper(env)
+        print("Applying wrapper CompletedEvalWrapper")
         env = CompletedEvalWrapper(env)
 
     return env
 
 
-def create_fn(env_name: str, **kwargs: Any) -> Callable[..., brax.envs.Env]:
+def create_fn(env_name: str, **kwargs: Any) -> Callable[..., Env]:
     """Returns a function that when called, creates an Env.
     Please use namespace to avoid confusion between this function and
     brax.envs.create_fn.

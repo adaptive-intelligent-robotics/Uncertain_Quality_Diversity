@@ -1,11 +1,11 @@
 from typing import Any
 
-import brax
+import brax.v1 as brax
 import jax
 import jax.numpy as jnp
-from brax import jumpy as jp
-from brax.envs import env
 from brax.math import quat_to_euler
+from brax.v1 import jumpy as jp
+from brax.v1.envs import env
 
 
 class Hexapod(env.Env):
@@ -34,7 +34,7 @@ class Hexapod(env.Env):
             qpos = self.sys.default_angle() + self._gaussian_noise(rng1)
         else:
             qpos = self.sys.default_angle() + self._noise(rng1)
-        if self._gaussian_pos:
+        if self._gaussian_vel:
             qvel = self._gaussian_noise(rng2)
         else:
             qvel = self._noise(rng2)
@@ -54,46 +54,12 @@ class Hexapod(env.Env):
         self.done = False
         return state
 
-    def _angle_dist(self, a: jp.ndarray, b: jp.ndarray) -> jp.ndarray:
-        theta = b - a
-        theta = jnp.where(theta < -jnp.pi, theta + 2 * jnp.pi, theta)
-        theta = jnp.where(theta > jnp.pi, theta - 2 * jnp.pi, theta)
-
-        theta = jnp.where(theta < -jnp.pi, theta + 2 * jnp.pi, theta)
-        theta = jnp.where(theta > jnp.pi, theta - 2 * jnp.pi, theta)
-        return theta
-
     def step(self, state: env.State, action: jp.ndarray) -> env.State:
         """Run one timestep of the environment's dynamics."""
 
         qp, info = self.sys.step(state.qp, action)
         obs = self._get_obs(qp, info)
         state.info["bd"] = qp.pos[0, 0:2]
-
-        # axis, angles = quat_to_axis_angle(obs.at[3:7].get())
-        # z_rot = axis.at[2].get()*angles
-        com_rot = quat_to_euler(qp.rot[0])
-        z_rot = com_rot[2]
-
-        ang_x, ang_y = qp.pos[0, 0], qp.pos[0, 1]
-        b_matrix = jnp.sqrt(
-            (ang_x / 2.0) * (ang_x / 2.0) + (ang_y / 2.0) * (ang_y / 2.0)
-        )
-        alpha = jnp.arctan2(ang_y, ang_x)
-        a_matrix = b_matrix / jnp.cos(alpha)
-        beta = jnp.arctan2(ang_y, ang_x - a_matrix)
-
-        beta = jnp.where(ang_x < 0, beta - jnp.pi, beta)
-        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
-        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
-
-        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
-        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
-
-        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
-        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
-
-        angle_diff = jnp.abs(self._angle_dist(beta, z_rot))
 
         x_before = state.qp.pos[0, 0]
         x_after = qp.pos[0, 0]
@@ -102,17 +68,10 @@ class Hexapod(env.Env):
         contact_cost = 0.5 * 1e-3 * jp.sum(jp.square(jp.clip(info.contact.vel, -1, 1)))
         survive_reward = jp.float32(1)
 
-        reward = (
-            -angle_diff
-        )  # forward_reward - ctrl_cost - contact_cost + survive_reward
-        # reward = jp.float32(0)
-        # jnp.where condition, Where True, yield x, otherwise yield y.
+        reward = self._get_reward(qp, info, action)
+
         done = jp.where(qp.pos[0, 2] < 0.05, x=jp.float32(1), y=jp.float32(0))
         done = jp.where(qp.pos[0, 2] > 0.19, x=jp.float32(1), y=done)
-
-        # self.done = jp.where((done == 1), True, self.done)
-        # reward = jp.where(self.done, jp.float32(-10),- angle_diff)
-        # reward = jp.float32(0)
 
         state.metrics.update(
             reward_ctrl_cost=ctrl_cost,
@@ -122,6 +81,9 @@ class Hexapod(env.Env):
         )
 
         return state.replace(qp=qp, obs=obs, reward=reward, done=done)
+
+    def _get_reward(self, qp: brax.QP, info: brax.Info, action: jp.ndarray) -> float:
+        return 0
 
     def _get_obs(self, qp: brax.QP, info: brax.Info) -> jp.ndarray:
         """Observe hexapod body position and velocities."""
@@ -161,6 +123,49 @@ class Hexapod(env.Env):
         return (
             jax.random.normal(rng, (self.sys.num_joint_dof,)) * self._reset_noise_scale
         )
+
+
+class HexapodAngleDiff(Hexapod):
+    def _angle_dist(self, a: jp.ndarray, b: jp.ndarray) -> jp.ndarray:
+        theta = b - a
+        theta = jnp.where(theta < -jnp.pi, theta + 2 * jnp.pi, theta)
+        theta = jnp.where(theta > jnp.pi, theta - 2 * jnp.pi, theta)
+
+        theta = jnp.where(theta < -jnp.pi, theta + 2 * jnp.pi, theta)
+        theta = jnp.where(theta > jnp.pi, theta - 2 * jnp.pi, theta)
+        return theta
+
+    def _get_reward(self, qp: brax.QP, info: brax.Info, action: jp.ndarray) -> float:
+        # axis, angles = quat_to_axis_angle(obs.at[3:7].get())
+        # z_rot = axis.at[2].get()*angles
+        com_rot = quat_to_euler(qp.rot[0])
+        z_rot = com_rot[2]
+
+        ang_x, ang_y = qp.pos[0, 0], qp.pos[0, 1]
+        b_matrix = jnp.sqrt(
+            (ang_x / 2.0) * (ang_x / 2.0) + (ang_y / 2.0) * (ang_y / 2.0)
+        )
+        alpha = jnp.arctan2(ang_y, ang_x)
+        a_matrix = b_matrix / jnp.cos(alpha)
+        beta = jnp.arctan2(ang_y, ang_x - a_matrix)
+
+        beta = jnp.where(ang_x < 0, beta - jnp.pi, beta)
+        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
+        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
+
+        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
+        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
+
+        beta = jnp.where(beta < -jnp.pi, beta + 2 * jnp.pi, beta)
+        beta = jnp.where(beta > jnp.pi, beta - 2 * jnp.pi, beta)
+
+        angle_diff = jnp.abs(self._angle_dist(beta, z_rot))
+        return -angle_diff
+
+
+class HexapodControl(Hexapod):
+    def _get_reward(self, qp: brax.QP, info: brax.Info, action: jp.ndarray) -> float:
+        return 0.5 * jp.sum(jp.square(action))
 
 
 _SYSTEM_CONFIG = """

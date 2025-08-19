@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from brax.envs import State as EnvState
 from qdax.core.neuroevolution.buffers.buffer import QDTransition, Transition
-from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, Params, RNGKey
+from qdax.custom_types import Descriptor, ExtraScores, Fitness, Genotype, Params, RNGKey
 
 
 @partial(jax.jit, static_argnames=("play_step_fn", "episode_length"))

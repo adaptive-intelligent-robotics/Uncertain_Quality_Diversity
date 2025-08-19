@@ -8,12 +8,19 @@ import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
 from qdax.core.containers.mapelites_repertoire import get_cells_indices
-from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype, RNGKey
+from qdax.custom_types import (
+    Centroid,
+    Descriptor,
+    ExtraScores,
+    Fitness,
+    Genotype,
+    RNGKey,
+)
 
 
 class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
     """
-    Class for a deep repertoire that also stores all past evaluations of each indiv.
+    Class for the deep repertoire with any estimator.
 
     Args:
         genotypes: a PyTree containing the genotypes of the best solutions ordered
@@ -21,29 +28,28 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             PyTree can be a simple Jax array or a more complex nested structure such
             as to represent parameters of neural network in Flax.
         genotypes_depth: a PyTree containing all the genotypes ordered by the centroids.
-            Each leaf has a shape (num_centroids * depth, num_features). The PyTree
+            Each leaf has a shape (num_centroids, depth, num_features). The PyTree
             can be a simple Jax array or a more complex nested structure such as to
             represent parameters of neural network in Flax.
         fitnesses: an array that contains the fitness of best solutions in each cell of
             the repertoire, ordered by centroids. The array shape is (num_centroids,).
         fitnesses_depth: an array that contains the fitness of all solutions in each
             cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids * depth).
+            is (num_centroids, depth).
         fitnesses_depth_all: an array that contains the fitness of all solutions in each
             cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids * depth, num_evals).
+            is (num_centroids, depth, num_evals).
         descriptors: an array that contains the descriptors of best solutions in each
             cell of the repertoire, ordered by centroids. The array shape
             is (num_centroids, num_descriptors).
+        descriptors_depth: an array that contains the descriptors of all solutions in each
+            cell of the repertoire, ordered by centroids. The array shape
+            is (num_centroids, depth, num_descriptors).
         descriptors_depth_all: an array that contains the descriptors of all solutions in
             each cell of the repertoire, ordered by centroids. The array shape
-            is (num_centroids * depth, num_evals, num_descriptors).
-        evaluations_depth: an array that contains the number of evaluations of
-            individuals in the grid.
-        total_evaluations: the total number of evaluations spent.
+            is (num_centroids, depth, num_evals, num_descriptors).
         centroids: an array the contains the centroids of the tesselation. The array
             shape is (num_centroids, num_descriptors).
-        dims
     """
 
     genotypes: Genotype
@@ -52,11 +58,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
     fitnesses_depth: Fitness
     fitnesses_depth_all: Fitness
     descriptors: Descriptor
+    descriptors_depth: Descriptor
     descriptors_depth_all: Descriptor
-    evaluations_depth: jnp.ndarray
-    total_evaluations: int
     centroids: Centroid
-    dims: jnp.ndarray
 
     def save(self, path: str = "./") -> None:
         """Saves the grid on disk in the form of .npy files.
@@ -84,11 +88,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         jnp.save(path + "fitnesses_depth.npy", self.fitnesses_depth)
         jnp.save(path + "fitnesses_depth_all.npy", self.fitnesses_depth_all)
         jnp.save(path + "descriptors.npy", self.descriptors)
+        jnp.save(path + "descriptors_depth.npy", self.descriptors_depth)
         jnp.save(path + "descriptors_depth_all.npy", self.descriptors_depth_all)
-        jnp.save(path + "evaluations_depth.npy", self.evaluations_depth)
-        jnp.save(path + "total_evaluations.npy", self.total_evaluations)
         jnp.save(path + "centroids.npy", self.centroids)
-        jnp.save(path + "dims.npy", self.dims)
 
     @classmethod
     def load(
@@ -114,11 +116,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         fitnesses_depth = jnp.load(path + "fitnesses_depth.npy")
         fitnesses_depth_all = jnp.load(path + "fitnesses_depth_all.npy")
         descriptors = jnp.load(path + "descriptors.npy")
+        descriptors_depth = jnp.load(path + "descriptors_depth.npy")
         descriptors_depth_all = jnp.load(path + "descriptors_depth_all.npy")
         centroids = jnp.load(path + "centroids.npy")
-        evaluations_depth = jnp.load(path + "evaluations_depth.npy")
-        total_evaluations = jnp.load(path + "total_evaluations.npy")
-        dims = jnp.load(path + "dims.npy")
 
         return ArchiveSamplingRepertoire(
             genotypes=genotypes,
@@ -127,11 +127,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             fitnesses_depth=fitnesses_depth,
             fitnesses_depth_all=fitnesses_depth_all,
             descriptors=descriptors,
+            descriptors_depth=descriptors_depth,
             descriptors_depth_all=descriptors_depth_all,
-            evaluations_depth=evaluations_depth,
-            total_evaluations=total_evaluations,
             centroids=centroids,
-            dims=dims,
         )
 
     @partial(jax.jit, static_argnames=("num_samples",))
@@ -191,184 +189,6 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
 
         return samples, descriptors, random_key
 
-    @jax.jit
-    def _cell_min_comparison_metrics(
-        self,
-        cells_indices: jnp.ndarray,
-        batch_of_indices: jnp.ndarray,
-        batch_of_comparison_metrics: Fitness,
-        comparison_metrics_depth: Fitness,
-    ) -> Fitness:
-        """
-        Sub-method for add(). Give the minimum fitness in each cell of cells_indices,
-        given current indivs in cells and new indivs to add in cells.
-        !!!WARNING!!! This is strict min fitness and should be used with >, not >=.
-
-        Args:
-            cells_indices: the cells to consider
-            batch_of_indices: indices of new indivs
-            batch_of_comparison_metrics: comparison_metrics of new indivs
-            comparison_metrics_depth: existing comparison_metrics depth
-
-        Returns: minimum fitness for each cell in cells_indices
-        """
-
-        @partial(jax.jit, static_argnames=("depth",))
-        def _get_cell_min_comparison_metrics(
-            idx: int,
-            comparison_metrics_depth_reshape: Fitness,
-            depth: int,
-            batch_of_indices: jnp.ndarray,
-            batch_of_comparison_metrics: Fitness,
-        ) -> float:
-            """
-            Applied using vmap on all cells_indices.
-            """
-            filter_comparison_metrics = jnp.where(
-                batch_of_indices == idx, batch_of_comparison_metrics, -jnp.inf
-            )
-            all_comparison_metrics = jnp.concatenate(
-                [filter_comparison_metrics, comparison_metrics_depth_reshape], axis=0
-            )
-            min_comparison_metrics, _ = jax.lax.top_k(all_comparison_metrics, depth + 1)
-            return min_comparison_metrics[depth]  # type: ignore
-
-        get_cell_min_comparison_metrics_fn = partial(
-            _get_cell_min_comparison_metrics,
-            depth=self.dims.shape[0],
-            batch_of_indices=batch_of_indices,
-            batch_of_comparison_metrics=batch_of_comparison_metrics,
-        )
-        return jax.vmap(get_cell_min_comparison_metrics_fn)(
-            cells_indices,
-            jnp.reshape(
-                comparison_metrics_depth, (self.centroids.shape[0], self.dims.shape[0])
-            )[cells_indices],
-        )
-
-    @jax.jit
-    def _indices_to_occurence(
-        self,
-        batch_of_indices: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """
-        Sub-method for add(). Return an array similar to the batch_of_indices
-        replacing each indice with its occurence number in the batch.
-
-        Args:
-            batch_of_indices: indices of new indivs
-
-        Returns: batch_of_occurences: number of occurence for each indice
-        """
-
-        @partial(jax.jit, static_argnames=("num_centroids",))
-        def _cumulative_count(
-            idx: int,
-            indices: jnp.ndarray,
-            batch_of_indices: jnp.ndarray,
-            num_centroids: int,
-        ) -> int:
-            filter_batch_of_indices = jnp.where(
-                indices.ravel() <= idx, batch_of_indices, num_centroids
-            )
-            count_indices = jnp.bincount(filter_batch_of_indices, length=num_centroids)
-            return count_indices.at[batch_of_indices[idx]].get() - 1  # type: ignore
-
-        num_centroids = self.centroids.shape[0]
-
-        # Get occurence
-        indices = jnp.arange(0, batch_of_indices.size, step=1)
-        cumulative_count = partial(
-            _cumulative_count,
-            indices=indices,
-            batch_of_indices=batch_of_indices,
-            num_centroids=num_centroids,
-        )
-        batch_of_occurence = jax.vmap(cumulative_count)(indices)
-
-        # Filter out-of-bond individuals
-        out_of_bound = self.dims.shape[0] * num_centroids
-        batch_of_occurence = jnp.where(
-            batch_of_indices < out_of_bound, batch_of_occurence, out_of_bound
-        )
-        return batch_of_occurence
-
-    @jax.jit
-    def _place_indivs(
-        self,
-        batch_of_indices: jnp.ndarray,
-        batch_of_comparison_metrics: Fitness,
-        comparison_metrics_depth: Fitness,
-    ) -> jnp.ndarray:
-        """
-        Sub-method for add(). Return indices to place new indiv in the depth grid.
-
-        Args:
-            batch_of_indices: indices of new indivs
-            batch_of_comparison_metrics: comparison_metrics of new indivs
-            comparison_metrics_depth: existing comparison_metrics depth
-
-        Returns: indices to place each new indiv
-        """
-
-        num_centroids = self.centroids.shape[0]
-        depth = self.dims.shape[0]
-        out_of_bound = num_centroids * depth  # Index of non-added individuals
-
-        # Get minimum comparison_metrics in each cell after addition
-        min_comparison_metrics = self._cell_min_comparison_metrics(
-            cells_indices=jnp.arange(0, num_centroids, step=1),
-            batch_of_indices=batch_of_indices,
-            batch_of_comparison_metrics=batch_of_comparison_metrics,
-            comparison_metrics_depth=comparison_metrics_depth,
-        )
-
-        # Filter individuals and keep those greater than min
-        batch_of_indices = jnp.where(
-            batch_of_comparison_metrics > min_comparison_metrics[batch_of_indices],
-            batch_of_indices,
-            out_of_bound,
-        )
-
-        # Get in-cell indices of individuals
-        batch_of_cell_indices = self._indices_to_occurence(batch_of_indices)
-        batch_of_cell_indices = jnp.where(
-            batch_of_indices < out_of_bound,
-            batch_of_indices * depth + batch_of_cell_indices,
-            out_of_bound,
-        )
-
-        # Filter empty slots using minimum fitness
-        @jax.jit
-        def _get_empty_slots(
-            slots: jnp.ndarray,
-            fitness: Fitness,
-            min_fitness: Fitness,
-            out_of_bound: int,
-        ) -> jnp.ndarray:
-            return jnp.where(fitness > min_fitness, out_of_bound, slots)
-
-        get_empty_slots = partial(_get_empty_slots, out_of_bound=out_of_bound)
-        empty_slots = jax.vmap(get_empty_slots)(
-            jnp.reshape(
-                jnp.arange(0, num_centroids * depth, step=1), (num_centroids, depth)
-            ),
-            jnp.reshape(comparison_metrics_depth, (num_centroids, depth)),
-            min_comparison_metrics,
-        )
-
-        # Sort the indices in each cell
-        empty_slots = jnp.sort(empty_slots, axis=1)
-
-        # Transforms in-cell indices to account for empty slots
-        final_batch_of_indices = jnp.where(
-            batch_of_cell_indices < out_of_bound,
-            empty_slots.ravel()[batch_of_cell_indices],
-            out_of_bound,
-        )
-
-        return final_batch_of_indices
-
     @partial(
         jax.jit,
         static_argnames=(
@@ -408,17 +228,21 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             The updated MAP-Elites repertoire.
         """
 
-        out_of_bound = (
-            self.dims.shape[0] * self.centroids.shape[0]
-        )  # Index of non-added individuals
+        num_centroids = self.fitnesses_depth.shape[0]
+        depth = self.fitnesses_depth.shape[1]
+        out_of_bound = max(
+            num_centroids * depth,
+            batch_of_all_fitnesses.shape[0],
+        )
 
-        # Compute batch of descriptor
+        # Compute batch of fitnesses and descriptor
+        batch_of_fitnesses = fitness_extractor(batch_of_all_fitnesses)
+        batch_of_fitnesses = jnp.where(
+            jnp.isnan(batch_of_fitnesses), -jnp.inf, batch_of_fitnesses
+        )
         batch_of_descriptors = descriptor_extractor(batch_of_all_descriptors)
 
-        # Compute batch of fitness
-        batch_of_fitnesses = fitness_extractor(batch_of_all_fitnesses)
-
-        # Compute indices
+        # Get indices
         batch_of_indices = get_cells_indices(batch_of_descriptors, self.centroids)
 
         # Filter dead individuals
@@ -428,93 +252,155 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             out_of_bound,
         )
 
-        # Get final indices of individuals addded to top layer of the grid
-        # (i.e. best indivs added in: genotypes, fitnesses, descriptors)
-        best_fitnesses = jax.ops.segment_max(
-            batch_of_fitnesses,
-            batch_of_indices,
-            num_segments=self.centroids.shape[0],
-        )
-        filter_fitnesses = jnp.where(
-            best_fitnesses[batch_of_indices] == batch_of_fitnesses,
-            batch_of_fitnesses,
-            -jnp.inf,
-        )
-        current_fitnesses = jnp.take_along_axis(self.fitnesses, batch_of_indices, 0)
-        final_batch_of_max_indices = jnp.where(
-            filter_fitnesses > current_fitnesses,
-            batch_of_indices,
-            out_of_bound,
-        )
+        @jax.jit
+        def _add_per_cell(
+            cell_idx: jnp.ndarray,
+            cell_genotypes_depth: Genotype,
+            cell_fitnesses_depth: Fitness,
+            cell_fitnesses_depth_all: Fitness,
+            cell_descriptors_depth: Descriptor,
+            cell_descriptors_depth_all: Descriptor,
+        ) -> Tuple[
+            Genotype,
+            Fitness,
+            Fitness,
+            Descriptor,
+            Descriptor,
+            Genotype,
+            Fitness,
+            Descriptor,
+        ]:
+            """
+            For a given cell with index cell_idx, filter candidate
+            indivs for this cell, and add them to it, reordering so
+            highest-fitness individuals are first.
 
-        # Get final indices of individuals added to the depth of the grid
-        # (i.e. indivs in: genotypes_depth, fitnesses_depth_all, descriptors_depth_all)
-        final_batch_of_indices = self._place_indivs(
-            batch_of_indices=batch_of_indices,
-            batch_of_comparison_metrics=batch_of_fitnesses,
-            comparison_metrics_depth=self.fitnesses_depth,
-        )
+            Args:
+              cell_idx: cell index
+              cell_genotypes_depth: genotype in the cell
+              cell_fitnesses_depth: fitnesses in the cell
+              cell_fitnesses_depth_all
+              cell_descriptors_depth: descriptors in the cell
+              cell_descriptors_depth_all
 
-        # Create new grid
-        new_grid_genotypes_depth = jax.tree_map(
-            lambda grid_genotypes, new_genotypes: grid_genotypes.at[
-                final_batch_of_indices
-            ].set(new_genotypes),
+            Returns:
+              new_cell_genotypes_depth
+              new_cell_fitnesses_depth
+              new_cell_fitnesses_depth_all
+              new_cell_descriptors_depth
+              new_cell_descriptors_depth_all
+              new_cell_genotype: genotype in the top layer of the cell
+              new_cell_fitnesses: fitnesses in the top layer of the cell
+              new_cell_descriptors: descriptors in the top layer of the cell
+            """
+
+            # Order existing and candidate indivs by fitness
+            candidate_fitnesses = jnp.where(
+                batch_of_indices == cell_idx, batch_of_fitnesses, -jnp.inf
+            )
+            all_fitnesses = jnp.concatenate(
+                [cell_fitnesses_depth, candidate_fitnesses],
+                axis=0,
+            )
+            _, final_indices = jax.lax.top_k(all_fitnesses, depth)
+
+            # First, move around existing indivs to follow order
+            cell_indices = jnp.where(
+                final_indices < depth,
+                final_indices,
+                out_of_bound,
+            )
+            new_cell_genotypes_depth = jax.tree_map(
+                lambda x: x.at[cell_indices].get(),
+                cell_genotypes_depth,
+            )
+            new_cell_fitnesses_depth = cell_fitnesses_depth.at[cell_indices].get()
+            new_cell_fitnesses_depth_all = cell_fitnesses_depth_all.at[
+                cell_indices
+            ].get()
+            new_cell_descriptors_depth = cell_descriptors_depth.at[cell_indices].get()
+            new_cell_descriptors_depth_all = cell_descriptors_depth_all.at[
+                cell_indices
+            ].get()
+
+            # Second, add the candidate indivs
+            candidate_indices = jnp.where(
+                final_indices >= depth,
+                final_indices - depth,
+                out_of_bound,
+            )
+            depth_indices = jnp.where(
+                candidate_indices < out_of_bound,
+                jnp.arange(0, depth, step=1),
+                out_of_bound,
+            )
+            new_cell_genotypes_depth = jax.tree_map(
+                lambda x, y: x.at[depth_indices].set(y[candidate_indices]),
+                new_cell_genotypes_depth,
+                batch_of_genotypes,
+            )
+            new_cell_fitnesses_depth = new_cell_fitnesses_depth.at[depth_indices].set(
+                batch_of_fitnesses[candidate_indices]
+            )
+            new_cell_fitnesses_depth_all = new_cell_fitnesses_depth_all.at[
+                depth_indices
+            ].set(batch_of_all_fitnesses[candidate_indices])
+            new_cell_descriptors_depth = new_cell_descriptors_depth.at[
+                depth_indices
+            ].set(batch_of_descriptors[candidate_indices])
+            new_cell_descriptors_depth_all = new_cell_descriptors_depth_all.at[
+                depth_indices
+            ].set(batch_of_all_descriptors[candidate_indices])
+
+            # Also return the top layer of the grid
+            new_cell_genotype = jax.tree_map(
+                lambda x: x.at[0].get(),
+                new_cell_genotypes_depth,
+            )
+            new_cell_fitnesses = new_cell_fitnesses_depth.at[0].get()
+            new_cell_descriptors = new_cell_descriptors_depth.at[0].get()
+
+            # Return the updated cell
+            return (
+                new_cell_genotypes_depth,
+                new_cell_fitnesses_depth,
+                new_cell_fitnesses_depth_all,
+                new_cell_descriptors_depth,
+                new_cell_descriptors_depth_all,
+                new_cell_genotype,
+                new_cell_fitnesses,
+                new_cell_descriptors,
+            )
+
+        # Add individuals cell by cell
+        (
+            new_genotypes_depth,
+            new_fitnesses_depth,
+            new_fitnesses_depth_all,
+            new_descriptors_depth,
+            new_descriptors_depth_all,
+            new_genotype,
+            new_fitnesses,
+            new_descriptors,
+        ) = jax.vmap(_add_per_cell)(
+            jnp.arange(0, num_centroids, step=1),
             self.genotypes_depth,
-            batch_of_genotypes,
-        )
-        new_grid_genotypes = jax.tree_map(
-            lambda grid_genotypes, new_genotypes: grid_genotypes.at[
-                final_batch_of_max_indices
-            ].set(new_genotypes),
-            self.genotypes,
-            batch_of_genotypes,
+            self.fitnesses_depth,
+            self.fitnesses_depth_all,
+            self.descriptors_depth,
+            self.descriptors_depth_all,
         )
 
-        # Compute new fitness and descriptors
-        new_fitnesses = self.fitnesses.at[final_batch_of_max_indices].set(
-            batch_of_fitnesses
-        )
-        new_fitnesses_depth = self.fitnesses_depth.at[final_batch_of_indices].set(
-            batch_of_fitnesses
-        )
-        new_fitnesses_depth_all = self.fitnesses_depth_all.at[
-            final_batch_of_indices
-        ].set(batch_of_all_fitnesses)
-        new_descriptors = self.descriptors.at[final_batch_of_max_indices].set(
-            batch_of_descriptors
-        )
-        new_descriptors_depth_all = self.descriptors_depth_all.at[
-            final_batch_of_indices
-        ].set(batch_of_all_descriptors)
-
-        # Compute new evaluations
-        batch_of_evaluations = batch_of_extra_scores["num_evaluations"]
-        new_evaluations_depth = self.evaluations_depth.at[final_batch_of_indices].set(
-            batch_of_evaluations
-        )
-        new_total_evaluations = self.total_evaluations + jnp.sum(batch_of_evaluations)
-
-        return ArchiveSamplingRepertoire(
-            genotypes=new_grid_genotypes,
-            genotypes_depth=new_grid_genotypes_depth,
-            fitnesses=new_fitnesses.squeeze(),
+        return self.replace(  # type:ignore
+            genotypes=new_genotype,
+            genotypes_depth=new_genotypes_depth,
+            fitnesses=new_fitnesses,
             fitnesses_depth=new_fitnesses_depth,
             fitnesses_depth_all=new_fitnesses_depth_all,
-            descriptors=new_descriptors.squeeze(),
+            descriptors=new_descriptors,
+            descriptors_depth=new_descriptors_depth,
             descriptors_depth_all=new_descriptors_depth_all,
-            evaluations_depth=new_evaluations_depth,
-            total_evaluations=new_total_evaluations,
-            centroids=self.centroids,
-            dims=self.dims,
         )
-
-    @jax.jit
-    def set_total_evaluations(
-        self, total_evaluations: int
-    ) -> ArchiveSamplingRepertoire:
-        """Set up current number of evaluations."""
-        return self.replace(total_evaluations=total_evaluations)  # type: ignore
 
     @classmethod
     def init(
@@ -557,25 +443,31 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         # Initialize grid with default values
         num_centroids = centroids.shape[0]
         default_fitnesses = -jnp.inf * jnp.ones(shape=num_centroids)
-        default_fitnesses_depth = -jnp.inf * jnp.ones(shape=(num_centroids * depth))
+        default_fitnesses_depth = -jnp.inf * jnp.ones(shape=(num_centroids, depth))
         default_fitnesses_depth_all = jnp.nan * jnp.ones(
-            shape=(num_centroids * depth, num_evals)
+            shape=(num_centroids, depth, num_evals)
         )
         default_genotypes = jax.tree_map(
             lambda x: jnp.zeros(shape=(num_centroids,) + x.shape[1:]),
             genotypes,
         )
         default_genotypes_depth = jax.tree_map(
-            lambda x: jnp.zeros(shape=(num_centroids * depth,) + x.shape[1:]),
+            lambda x: jnp.zeros(
+                shape=(
+                    num_centroids,
+                    depth,
+                )
+                + x.shape[1:]
+            ),
             genotypes,
         )
         default_descriptors = jnp.zeros(shape=(num_centroids, centroids.shape[-1]))
-        default_descriptors_depth_all = jnp.nan * jnp.ones(
-            shape=(num_centroids * depth, num_evals, centroids.shape[-1])
+        default_descriptors_depth = jnp.zeros(
+            shape=(num_centroids, depth, centroids.shape[-1])
         )
-        default_evaluations_depth = jnp.zeros(shape=num_centroids * depth)
-        default_total_evaluations = 0
-        dims = jnp.zeros(shape=(depth, num_evals))
+        default_descriptors_depth_all = jnp.nan * jnp.ones(
+            shape=(num_centroids, depth, num_evals, centroids.shape[-1])
+        )
 
         repertoire = ArchiveSamplingRepertoire(
             genotypes=default_genotypes,
@@ -584,11 +476,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             fitnesses_depth=default_fitnesses_depth,
             fitnesses_depth_all=default_fitnesses_depth_all,
             descriptors=default_descriptors,
+            descriptors_depth=default_descriptors_depth,
             descriptors_depth_all=default_descriptors_depth_all,
-            evaluations_depth=default_evaluations_depth,
-            total_evaluations=default_total_evaluations,
             centroids=centroids,
-            dims=dims,
         )
 
         # Add initial values to the grid
@@ -618,13 +508,12 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         new_fitnesses_depth = jnp.full_like(self.fitnesses_depth, -jnp.inf)
         new_fitnesses_depth_all = jnp.full_like(self.fitnesses_depth_all, jnp.nan)
         new_descriptors = jnp.zeros_like(self.descriptors)
+        new_descriptors_depth = jnp.zeros_like(self.descriptors_depth)
         new_descriptors_depth_all = jnp.full_like(self.descriptors_depth_all, jnp.nan)
         new_genotypes = jax.tree_map(lambda x: jnp.zeros_like(x), self.genotypes)
         new_genotypes_depth = jax.tree_map(
             lambda x: jnp.zeros_like(x), self.genotypes_depth
         )
-        new_evaluations_depth = jnp.zeros_like(self.evaluations_depth)
-        new_total_evaluations = 0
         return ArchiveSamplingRepertoire(
             genotypes=new_genotypes,
             genotypes_depth=new_genotypes_depth,
@@ -632,11 +521,9 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
             fitnesses_depth=new_fitnesses_depth,
             fitnesses_depth_all=new_fitnesses_depth_all,
             descriptors=new_descriptors,
+            descriptors_depth=new_descriptors_depth,
             descriptors_depth_all=new_descriptors_depth_all,
-            evaluations_depth=new_evaluations_depth,
-            total_evaluations=new_total_evaluations,
             centroids=self.centroids,
-            dims=self.dims,
         )
 
     @jax.jit
@@ -658,9 +545,17 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         repertoire_genotypes = jax.tree_util.tree_map(
             lambda x: x[cells], self.genotypes_depth
         )
-        added = jax.tree_util.tree_map(
-            lambda x, y: jnp.equal(x, y), genotypes, repertoire_genotypes
+        genotypes = jax.tree_util.tree_map(
+            lambda x, y: jnp.repeat(jnp.expand_dims(x, axis=1), y.shape[1], axis=1),
+            genotypes,
+            repertoire_genotypes,
         )
+        added = jax.tree_util.tree_map(
+            lambda x, y: jnp.equal(x, y),
+            genotypes,
+            repertoire_genotypes,
+        )
+        added = jax.tree_util.tree_map(lambda x: jnp.any(x, axis=1), added)
         added = jax.tree_util.tree_map(
             lambda x: jnp.reshape(x, (descriptors.shape[0], -1)), added
         )
@@ -668,3 +563,465 @@ class ArchiveSamplingRepertoire(flax.struct.PyTreeNode):
         final_added = jnp.array(jax.tree_util.tree_leaves(added))
         final_added = jnp.all(final_added, axis=0)
         return final_added
+
+    @jax.jit
+    def _order_repertoire(
+        self,
+        rows: jnp.ndarray,
+        cols: jnp.ndarray,
+        random_key: RNGKey,
+    ) -> Tuple[ArchiveSamplingRepertoire, RNGKey]:
+        """
+        Re-order repertoire following extraction.
+
+        Args:
+            random_key: a jax PRNG random key
+            rows, cols: position of extracted individuals
+
+        Returns:
+            repertoire: the new repertoire
+            random_key: an updated jax PRNG random key
+        """
+
+        # Remove extracted individuals from all grids
+        new_genotypes_depth = jax.tree_util.tree_map(
+            lambda x: x.at[rows, cols].set(0),
+            self.genotypes_depth,
+        )
+        new_fitnesses_depth = self.fitnesses_depth.at[rows, cols].set(-jnp.inf)
+        new_fitnesses_depth_all = self.fitnesses_depth_all.at[rows, cols].set(jnp.nan)
+        new_descriptors_depth = self.descriptors_depth.at[rows, cols].set(0)
+        new_descriptors_depth_all = self.descriptors_depth_all.at[rows, cols].set(
+            jnp.nan
+        )
+
+        def re_order_cell(
+            genotypes_depth_cell: Genotype,
+            fitnesses_depth_cell: Fitness,
+            fitnesses_depth_all_cell: Fitness,
+            descriptors_depth_cell: Descriptor,
+            descriptors_depth_all_cell: Descriptor,
+        ) -> Tuple[
+            Genotype,
+            Fitness,
+            Fitness,
+            Descriptor,
+            Descriptor,
+            Genotype,
+            Fitness,
+            Descriptor,
+        ]:
+            """
+            Re-order a cell after extraction. Put highest fitness first and
+            empty slot at the end.
+
+            Inputs:
+                genotypes_depth_cell: current genotypes of the cell
+                fitnesses_depth_cell
+                fitnesses_depth_all_cell
+                descriptors_depth_cell
+                descriptors_depth_all_cell
+
+            Returns:
+                genotypes_depth_cell: new genotypes of the cell
+                fitnesses_depth_cell
+                fitnesses_depth_all_cell
+                descriptors_depth_cell
+                descriptors_depth_all_cell
+                genotypes_cell: new top layer of the cell
+                fitnesses_cell
+                descriptors_cell
+            """
+
+            # Get re-ordering index for given cell
+            index = jnp.argsort(fitnesses_depth_cell)
+            index = index[::-1]
+
+            # Re-order given cell
+            genotypes_depth_cell = jax.tree_util.tree_map(
+                lambda x: x.at[index].get(),
+                genotypes_depth_cell,
+            )
+            fitnesses_depth_cell = fitnesses_depth_cell.at[index].get()
+            fitnesses_depth_all_cell = fitnesses_depth_all_cell.at[index].get()
+            descriptors_depth_cell = descriptors_depth_cell.at[index].get()
+            descriptors_depth_all_cell = descriptors_depth_all_cell.at[index].get()
+
+            # Get the top layer of the cell
+            genotypes_cell = jax.tree_map(
+                lambda x: x.at[0].get(),
+                genotypes_depth_cell,
+            )
+            fitnesses_cell = fitnesses_depth_cell.at[0].get()
+            descriptors_cell = descriptors_depth_cell.at[0].get()
+
+            return (
+                genotypes_depth_cell,
+                fitnesses_depth_cell,
+                fitnesses_depth_all_cell,
+                descriptors_depth_cell,
+                descriptors_depth_all_cell,
+                genotypes_cell,
+                fitnesses_cell,
+                descriptors_cell,
+            )
+
+        # Re-order to put extracted individuals at the end of each cell
+        (
+            new_genotypes_depth,
+            new_fitnesses_depth,
+            new_fitnesses_depth_all,
+            new_descriptors_depth,
+            new_descriptors_depth_all,
+            new_genotypes,
+            new_fitnesses,
+            new_descriptors,
+        ) = jax.vmap(re_order_cell)(
+            new_genotypes_depth,
+            new_fitnesses_depth,
+            new_fitnesses_depth_all,
+            new_descriptors_depth,
+            new_descriptors_depth_all,
+        )
+
+        # Create the new repertoire
+        repertoire = self.replace(
+            genotypes=new_genotypes,
+            genotypes_depth=new_genotypes_depth,
+            fitnesses=new_fitnesses,
+            fitnesses_depth=new_fitnesses_depth,
+            fitnesses_depth_all=new_fitnesses_depth_all,
+            descriptors=new_descriptors,
+            descriptors_depth=new_descriptors_depth,
+            descriptors_depth_all=new_descriptors_depth_all,
+        )
+
+        return repertoire, random_key
+
+    @partial(jax.jit, static_argnames=("num_samples",))
+    def extract_uniform(
+        self,
+        random_key: RNGKey,
+        num_samples: int,
+    ) -> Tuple[ArchiveSamplingRepertoire, Genotype, Fitness, Descriptor, RNGKey]:
+        """
+        Extract num_samples random element from the grid.
+        Extract means that they are removed from the grid when sampled.
+
+        Args:
+            random_key: a jax PRNG random key
+            num_samples: the number of elements to be sampled
+
+        Returns:
+            repertoire: the new repertoire
+            extract_genotypes: extracted genotypes
+            extract_fitnesses: all fitnesses of the extracted genotypes
+            extract_descriptors: all descriptors of the extracted genotypes
+            random_key: an updated jax PRNG random key
+        """
+
+        num_centroids = self.fitnesses_depth.shape[0]
+        depth = self.fitnesses_depth.shape[1]
+
+        # Set probability for each individual to be sampled
+        reshape_fitnesses_depth = self.fitnesses_depth.flatten()
+        p = jnp.where(reshape_fitnesses_depth > -jnp.inf, 1.0, 0.0)
+
+        # Extract num_samples indivs
+        p = p / jnp.sum(p)
+        random_key, subkey = jax.random.split(random_key)
+        indices = jax.random.choice(
+            subkey,
+            num_centroids * depth,
+            shape=(num_samples,),
+            p=p,
+            replace=False,
+        )
+        rows, cols = jnp.divmod(indices, depth)
+        rows = rows.astype(int)
+        cols = cols.astype(int)
+
+        # Extract the final genotypes, fitnesses_all and descriptors_all to return
+        extract_genotypes = jax.tree_util.tree_map(
+            lambda x: x.at[rows, cols].get(),
+            self.genotypes_depth,
+        )
+        extract_fitnesses_all = self.fitnesses_depth_all.at[rows, cols].get()
+        extract_descriptors_all = self.descriptors_depth_all.at[rows, cols].get()
+
+        # Re-order repertoire following extraction
+        repertoire, random_key = self._order_repertoire(rows, cols, random_key)
+
+        return (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses_all,
+            extract_descriptors_all,
+            random_key,
+        )
+
+    @partial(
+        jax.jit,
+        static_argnames=(
+            "num_samples",
+            "type_prop",
+        ),
+    )
+    def extract_prop(
+        self,
+        random_key: RNGKey,
+        num_samples: int,
+        type_prop: str = "exponential",
+    ) -> Tuple[ArchiveSamplingRepertoire, Genotype, Fitness, Descriptor, RNGKey]:
+        """
+        Extract num_samples random element from the grid.
+        Extract means that they are removed from the grid when sampled.
+
+        Args:
+            random_key: a jax PRNG random key
+            num_samples: the number of elements to be sampled
+
+        Returns:
+            repertoire: the new repertoire
+            extract_genotypes: extracted genotypes
+            extract_fitnesses: all fitnesses of the extracted genotypes
+            extract_descriptors: all descriptors of the extracted genotypes
+            random_key: an updated jax PRNG random key
+        """
+
+        num_centroids = self.fitnesses_depth.shape[0]
+        depth = self.fitnesses_depth.shape[1]
+
+        # Set probability for each individual to be sampled
+        reshape_fitnesses_depth = self.fitnesses_depth.flatten()
+        if type_prop == "exponential":
+            p = jnp.exp(-jnp.arange(0, depth))
+        elif type_prop == "linear":
+            p = depth - jnp.arange(0, depth)
+        elif type_prop == "harmonic":
+            p = 1.0 / (jnp.arange(depth) + 1)
+        else:
+            assert 0, "!!!ERROR!!! Not implemented type_prop."
+        p = jnp.repeat(jnp.expand_dims(p, axis=0), num_centroids, axis=0)
+        p = p.flatten()
+        p = jnp.where(
+            reshape_fitnesses_depth > -jnp.inf,
+            p,
+            0,
+        )
+
+        # Extract num_samples indivs
+        p = p / jnp.sum(p)
+        random_key, subkey = jax.random.split(random_key)
+        indices = jax.random.choice(
+            subkey,
+            num_centroids * depth,
+            shape=(num_samples,),
+            p=p,
+            replace=False,
+        )
+        rows, cols = jnp.divmod(indices, depth)
+        rows = rows.astype(int)
+        cols = cols.astype(int)
+
+        # Extract the final genotypes, fitnesses_all and descriptors_all to return
+        extract_genotypes = jax.tree_util.tree_map(
+            lambda x: x.at[rows, cols].get(),
+            self.genotypes_depth,
+        )
+        extract_fitnesses_all = self.fitnesses_depth_all.at[rows, cols].get()
+        extract_descriptors_all = self.descriptors_depth_all.at[rows, cols].get()
+
+        # Re-order repertoire following extraction
+        repertoire, random_key = self._order_repertoire(rows, cols, random_key)
+
+        return (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses_all,
+            extract_descriptors_all,
+            random_key,
+        )
+
+    @partial(jax.jit, static_argnames=("num_layers",))
+    def extract_top_layer(
+        self,
+        random_key: RNGKey,
+        num_layers: int,
+    ) -> Tuple[ArchiveSamplingRepertoire, Genotype, Fitness, Descriptor, RNGKey]:
+        """
+        Extract the num_layers top layers from the grid.
+        Extract means that they are removed from the grid when sampled.
+
+        Args:
+            random_key: a jax PRNG random key
+            num_layers: the number of top layers to be sampled
+
+        Returns:
+            repertoire: the new repertoire
+            extract_genotypes: extracted genotypes
+            extract_fitnesses: all fitnesses of the extracted genotypes
+            extract_descriptors: all descriptors of the extracted genotypes
+            random_key: an updated jax PRNG random key
+        """
+
+        num_centroids = self.centroids.shape[0]
+
+        # Extract the top num_layers
+        extract_genotypes = jax.tree_util.tree_map(
+            lambda x: jnp.reshape(
+                x.at[:, :num_layers].get(),
+                (num_layers * num_centroids,) + x.shape[2:],
+            ),
+            self.genotypes_depth,
+        )
+        extract_fitnesses_all = jnp.reshape(
+            self.fitnesses_depth_all.at[:, :num_layers].get(),
+            (num_layers * num_centroids, self.fitnesses_depth_all.shape[2]),
+        )
+        extract_descriptors_all = jnp.reshape(
+            self.descriptors_depth_all.at[:, :num_layers].get(),
+            (num_layers * num_centroids,) + self.descriptors_depth_all.shape[2:],
+        )
+
+        # Set the top num_layers to -jnp.inf
+        genotypes_depth = jax.tree_util.tree_map(
+            lambda x: x.at[:, :num_layers].set(0),
+            self.genotypes_depth,
+        )
+        fitnesses_depth = self.fitnesses_depth.at[:, :num_layers].set(-jnp.inf)
+        fitnesses_depth_all = self.fitnesses_depth_all.at[:, :num_layers].set(jnp.nan)
+        descriptors_depth = self.descriptors_depth.at[:, :num_layers].set(0)
+        descriptors_depth_all = self.descriptors_depth_all.at[:, :num_layers].set(
+            jnp.nan
+        )
+
+        # Roll the layers best fitnesses at the top
+        genotypes_depth = jax.tree_util.tree_map(
+            lambda x: jnp.roll(x, -num_layers, axis=1),
+            genotypes_depth,
+        )
+        fitnesses_depth = jnp.roll(fitnesses_depth, -num_layers, axis=1)
+        fitnesses_depth_all = jnp.roll(fitnesses_depth_all, -num_layers, axis=1)
+        descriptors_depth = jnp.roll(descriptors_depth, -num_layers, axis=1)
+        descriptors_depth_all = jnp.roll(descriptors_depth_all, -num_layers, axis=1)
+
+        # Create top layer of the grid from depth
+        genotypes = jax.tree_map(lambda x: x.at[:, 0].get(), genotypes_depth)
+        fitnesses = fitnesses_depth.at[:, 0].get()
+        descriptors = descriptors_depth.at[:, 0].get()
+
+        # Create the new repertoire
+        repertoire = self.replace(
+            genotypes=genotypes,
+            genotypes_depth=genotypes_depth,
+            fitnesses=fitnesses,
+            fitnesses_depth=fitnesses_depth,
+            fitnesses_depth_all=fitnesses_depth_all,
+            descriptors=descriptors,
+            descriptors_depth=descriptors_depth,
+            descriptors_depth_all=descriptors_depth_all,
+        )
+
+        return (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses_all,
+            extract_descriptors_all,
+            random_key,
+        )
+
+    @partial(jax.jit, static_argnames=("num_layers",))
+    def extract_top_layer_fillin(
+        self,
+        random_key: RNGKey,
+        num_layers: int,
+    ) -> Tuple[ArchiveSamplingRepertoire, Genotype, Fitness, Descriptor, RNGKey]:
+        """
+         Extract the num_layers top layers from the grid.
+         Extract means that they are removed from the grid when sampled.
+
+         Args:
+             random_key: a jax PRNG random key
+             num_layers: the number of top layers to be sampled
+
+         Returns:
+        repertoire: the new repertoire
+             extract_genotypes: extracted genotypes
+             extract_fitnesses: all fitnesses of the extracted genotypes
+             extract_descriptors: all descriptors of the extracted genotypes
+             random_key: an updated jax PRNG random key
+        """
+
+        num_centroids = self.fitnesses_depth.shape[0]
+        depth = self.fitnesses_depth.shape[1]
+        out_of_bound = num_centroids * depth
+
+        # Extract the top num_layers
+        (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses_all,
+            extract_descriptors_all,
+            random_key,
+        ) = self.extract_top_layer(random_key=random_key, num_layers=num_layers)
+
+        # Set probability for each individual to be sampled
+        reshape_fitnesses_depth = repertoire.fitnesses_depth.flatten()
+        p = jnp.where(reshape_fitnesses_depth > -jnp.inf, 1.0, 0.0)
+
+        # Extract num_samples indivs
+        p = p / jnp.sum(p)
+        random_key, subkey = jax.random.split(random_key)
+        indices = jax.random.choice(
+            subkey,
+            num_centroids * depth,
+            shape=(num_layers * num_centroids,),
+            p=p,
+            replace=False,
+        )
+        rows, cols = jnp.divmod(indices, depth)
+        rows = rows.astype(int)
+        cols = cols.astype(int)
+
+        # Only extract where nothing was already extracted
+        cond = jnp.any(jnp.logical_not(jnp.isnan(extract_fitnesses_all)), axis=1)
+        rows = jnp.where(cond, out_of_bound, rows)
+        cols = jnp.where(cond, out_of_bound, cols)
+        extract_genotypes = jax.tree_util.tree_map(
+            lambda x, y: jnp.where(
+                jnp.reshape(cond, cond.shape + (1,) * (len(x.shape) - len(cond.shape))),
+                x,
+                y.at[rows, cols].get(),
+            ),
+            extract_genotypes,
+            repertoire.genotypes_depth,
+        )
+        extract_fitnesses_all = jnp.where(
+            jnp.reshape(cond, cond.shape + (1,)),
+            extract_fitnesses_all,
+            repertoire.fitnesses_depth_all.at[rows, cols].get(),
+        )
+        extract_descriptors_all = jnp.where(
+            jnp.reshape(
+                cond,
+                cond.shape
+                + (
+                    1,
+                    1,
+                ),
+            ),
+            extract_descriptors_all,
+            repertoire.descriptors_depth_all.at[rows, cols].get(),
+        )
+
+        # Re-order repertoire following extraction
+        repertoire, random_key = repertoire._order_repertoire(rows, cols, random_key)
+
+        return (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses_all,
+            extract_descriptors_all,
+            random_key,
+        )

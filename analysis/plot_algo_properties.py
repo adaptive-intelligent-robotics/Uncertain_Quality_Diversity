@@ -10,14 +10,14 @@ from analysis.utils_plot import plot_rows_select
 
 def plot_algo_properties(
     plot_folder: str,
-    all_data: pd.DataFrame,
-    all_times: pd.DataFrame,
+    all_convergence: pd.DataFrame,
     color_frame: pd.DataFrame,
     compare_size: str,
     compare_title: str,
     order: List,
     legend_columns: int,
     legend_bottom: float,
+    errors: bool = False,
 ) -> None:
 
     plot_rows_select_fn = partial(
@@ -43,17 +43,17 @@ def plot_algo_properties(
     )
 
     # Print the metrics per env
-    size_values = all_data[compare_size].drop_duplicates().values
+    size_values = all_convergence[compare_size].drop_duplicates().values
     size_values.sort()
     rows_select = [[compare_size, x] for x in size_values]
     rows_name = [f"{compare_title} {x}" for x in size_values]
-    for env in all_data["env"].drop_duplicates().values:
+    for env in all_convergence["env"].drop_duplicates().values:
 
         # Extract and sort data
-        env_data = all_data[all_data["env"] == env].reset_index(drop=True)
-        env_data = sort_data(env_data, ["algo", "rep", "eval"], order)
-        env_times = all_times[all_times["env"] == env].reset_index(drop=True)
-        env_times = sort_data(env_times, ["algo", "rep", compare_size], order)
+        env_convergence = all_convergence[all_convergence["env"] == env].reset_index(
+            drop=True
+        )
+        env_convergence = sort_data(env_convergence, ["algo", "rep", "eval"], order)
 
         # First, plot num samples across epoch with sizes as lines and metrics as columns
         try:
@@ -67,7 +67,7 @@ def plot_algo_properties(
             ]
             plot_rows_select_fn(
                 file_name=f"{plot_folder}/{env}-num_samples-convergence.svg",
-                data_frame=env_data,
+                data_frame=env_convergence,
                 rows_select=rows_select,
                 rows_name=rows_name,
                 columns=columns,
@@ -75,23 +75,26 @@ def plot_algo_properties(
             )
         except Exception:
             print(f"\n!!!WARNING!!! Cannot plot num_samples-convergence for {env}.")
-            traceback.print_exc()
+            if errors:
+                traceback.print_exc()
 
         # Second, plot deep target across epoch with sizes as lines and metrics as columns
         try:
 
             # Only plot Deep-Target algos
-            sub_data = env_data[env_data["algo"].str.contains("Deep-Target")]
+            sub_convergence = env_convergence[
+                env_convergence["algo"].str.contains("Deep-Target")
+            ]
 
             # Fix some values
-            sub_data["average_target"] = (
-                sub_data["target_qd_score"] / sub_data["num_centroids"]
+            sub_convergence["average_target"] = (
+                sub_convergence["target_qd_score"] / sub_convergence["num_centroids"]
             )
-            sub_data["average_qd_score"] = (
-                sub_data["qd_score"] / sub_data["num_centroids"]
+            sub_convergence["average_qd_score"] = (
+                sub_convergence["qd_score"] / sub_convergence["num_centroids"]
             )
-            sub_data["average_reeval_qd_score"] = (
-                sub_data["reeval_qd_score"] / sub_data["num_centroids"]
+            sub_convergence["average_reeval_qd_score"] = (
+                sub_convergence["reeval_qd_score"] / sub_convergence["num_centroids"]
             )
 
             # Plot
@@ -113,7 +116,7 @@ def plot_algo_properties(
             ]
             plot_rows_select_fn(
                 file_name=f"{plot_folder}/{env}-target-convergence.svg",
-                data_frame=sub_data,
+                data_frame=sub_convergence,
                 rows_select=rows_select,
                 rows_name=rows_name,
                 columns=columns,
@@ -121,4 +124,5 @@ def plot_algo_properties(
             )
         except Exception:
             print(f"\n!!!WARNING!!! Cannot plot target-convergence for {env}.")
-            traceback.print_exc()
+            if errors:
+                traceback.print_exc()

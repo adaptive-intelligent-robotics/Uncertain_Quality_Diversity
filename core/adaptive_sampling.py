@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Callable, Optional, Tuple
 
-import jax
 import jax.numpy as jnp
+from qdax.core.containers.repertoire import Repertoire
 from qdax.core.emitters.emitter import Emitter, EmitterState
-from qdax.core.map_elites import MAPElites
-from qdax.types import (
+from qdax.custom_types import (
     Centroid,
     Descriptor,
     ExtraScores,
@@ -17,13 +15,13 @@ from qdax.types import (
     RNGKey,
 )
 
-from core.containers.mapelites_delta_reprod_repertoire import (
-    MapElitesDeltaReprodRepertoire,
-)
+from core.containers.adaptive_sampling_repertoire import AdaptiveSamplingRepertoire
 
 
-class MAPElitesDeltaReprod(MAPElites):
-    """Core elements of the MAP-Elites Reproducibility algorithm."""
+class AdaptiveSampling:
+    """
+    Core elements of the Archive-Sampling algorithm.
+    """
 
     def __init__(
         self,
@@ -31,100 +29,85 @@ class MAPElitesDeltaReprod(MAPElites):
             [Genotype, RNGKey], Tuple[Fitness, Descriptor, ExtraScores, RNGKey]
         ],
         emitter: Emitter,
-        metrics_function: Callable[[MapElitesDeltaReprodRepertoire], Metrics],
+        metrics_function: Callable[[Repertoire], Metrics],
+        depth: int,
+        max_number_evals: int,
+        sampling_size: int,
+        num_descriptors: int,
         fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
-        use_weighting: bool,
-        delta_fitness: float,
-        delta_reproducibility: float,
-        rho: float,
     ) -> None:
         self._scoring_function = scoring_function
         self._emitter = emitter
         self._metrics_function = metrics_function
+        self._depth = depth
+        self._sampling_size = sampling_size
+        self._num_descriptors = num_descriptors
+        self._max_number_evals = max_number_evals
         self._fitness_extractor = fitness_extractor
         self._fitness_reproducibility_extractor = fitness_reproducibility_extractor
         self._descriptor_extractor = descriptor_extractor
         self._descriptor_reproducibility_extractor = (
             descriptor_reproducibility_extractor
         )
-        self._use_weighting = use_weighting
-        self._delta_fitness = delta_fitness
-        self._delta_reproducibility = delta_reproducibility
-        self._rho = rho
 
-    @partial(jax.jit, static_argnames=("self",))
     def init(
         self,
         genotypes: Genotype,
         centroids: Centroid,
         random_key: RNGKey,
-    ) -> Tuple[MapElitesDeltaReprodRepertoire, Optional[EmitterState], RNGKey]:
-        """Initialize a MAP-Elites Low-Spread repertoire with an initial
-        population of genotypes. Requires the definition of centroids that can
-        be computed with any method such as CVT or Euclidean mapping.
+    ) -> Tuple[AdaptiveSamplingRepertoire, Optional[EmitterState], RNGKey]:
+        """
+        Initialize a Map-Elites repertoire with an initial population of genotypes.
+        Requires the definition of centroids that can be computed with any method
+        such as CVT or Euclidean mapping.
 
         Args:
             genotypes: initial genotypes, pytree in which leaves
                 have shape (batch_size, num_features)
-            centroids: tessellation centroids of shape (batch_size, num_descriptors)
+            centroids: tesselation centroids of shape (batch_size, num_descriptors)
             random_key: a random key used for stochastic operations.
 
         Returns:
-            A tuple of (initialized MAP-Elites Low-Spread repertoire, initial emitter
-            state, JAX random key).
+            An initialized MAP-Elite repertoire with the initial state of the emitter,
+            and a random key.
         """
-        # score initial genotypes
-        fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            genotypes, random_key
-        )
-        # jax.debug.print("descriptors {x}", x=descriptors)
 
         # init the repertoire
-        repertoire = MapElitesDeltaReprodRepertoire.init(
+        repertoire = AdaptiveSamplingRepertoire.init(
             genotypes=genotypes,
-            fitnesses=fitnesses,
-            descriptors=descriptors,
             centroids=centroids,
-            extra_scores=extra_scores,
+            depth=self._depth,
+            num_evals=self._max_number_evals,
             fitness_extractor=self._fitness_extractor,
             fitness_reproducibility_extractor=self._fitness_reproducibility_extractor,
             descriptor_extractor=self._descriptor_extractor,
             descriptor_reproducibility_extractor=self._descriptor_reproducibility_extractor,
-            use_weighting=self._use_weighting,
-            delta_fitness=self._delta_fitness,
-            delta_reproducibility=self._delta_reproducibility,
-            rho=self._rho,
+            random_key=random_key,
+            scoring_fn=self._scoring_function,
+            maximum_evals_per_generation=self._sampling_size,
         )
 
         # get initial state of the emitter
         emitter_state, random_key = self._emitter.init(
-            init_genotypes=genotypes, random_key=random_key
-        )
-
-        # update emitter state
-        extracted_descriptors = self._descriptor_extractor(descriptors)
-        extracted_fitnesses = self._fitness_extractor(fitnesses)
-        # jax.debug.print("extracted_descriptors {x}", x=extracted_descriptors)
-        emitter_state = self._emitter.state_update(
-            emitter_state=emitter_state,
+            random_key=random_key,
             repertoire=repertoire,
             genotypes=genotypes,
-            fitnesses=extracted_fitnesses,
-            descriptors=extracted_descriptors,
-            extra_scores=extra_scores,
+            fitnesses=jnp.zeros((self._emitter._batch_size,)),
+            descriptors=jnp.zeros((self._emitter._batch_size, self._num_descriptors)),
+            extra_scores={},
         )
+
         return repertoire, emitter_state, random_key
 
-    @partial(jax.jit, static_argnames=("self",))
     def update(
         self,
-        repertoire: MapElitesDeltaReprodRepertoire,
+        repertoire: AdaptiveSamplingRepertoire,
         emitter_state: Optional[EmitterState],
         random_key: RNGKey,
-    ) -> Tuple[MapElitesDeltaReprodRepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[AdaptiveSamplingRepertoire, Optional[EmitterState], Metrics, RNGKey]:
         """
         Performs one iteration of the MAP-Elites algorithm.
         1. A batch of genotypes is sampled in the repertoire and the genotypes
@@ -146,43 +129,28 @@ class MAPElitesDeltaReprod(MAPElites):
         """
 
         # generate offsprings with the emitter
-        genotypes, random_key = self._emitter.emit(
+        genotypes, extra_info, random_key = self._emitter.emit(
             repertoire, emitter_state, random_key
         )
-
-        # scores the offsprings
-        fitnesses, descriptors, extra_scores, random_key = self._scoring_function(
-            genotypes, random_key
-        )
-        # jax.debug.print("descriptors {x}", x=descriptors)
 
         # add genotypes in the repertoire
         repertoire = repertoire.add(
             batch_of_genotypes=genotypes,
-            batch_of_descriptors=descriptors,
-            batch_of_fitnesses=fitnesses,
-            batch_of_extra_scores=extra_scores,
             fitness_extractor=self._fitness_extractor,
             fitness_reproducibility_extractor=self._fitness_reproducibility_extractor,
             descriptor_extractor=self._descriptor_extractor,
             descriptor_reproducibility_extractor=self._descriptor_reproducibility_extractor,
-            use_weighting=self._use_weighting,
-            delta_fitness=self._delta_fitness,
-            delta_reproducibility=self._delta_reproducibility,
-            rho=self._rho,
+            scoring_fn=self._scoring_function,
         )
 
         # update emitter state after scoring is made
-        extracted_descriptors = self._descriptor_extractor(descriptors)
-        # jax.debug.print("extracted_descriptors {x}", x=extracted_descriptors)
-        extracted_fitnesses = self._fitness_extractor(fitnesses)
         emitter_state = self._emitter.state_update(
             emitter_state=emitter_state,
             repertoire=repertoire,
             genotypes=genotypes,
-            fitnesses=extracted_fitnesses,
-            descriptors=extracted_descriptors,
-            extra_scores=extra_scores,
+            fitnesses=jnp.zeros((self._emitter._batch_size,)),
+            descriptors=jnp.zeros((self._emitter._batch_size, self._num_descriptors)),
+            extra_scores={},
         )
 
         # update the metrics

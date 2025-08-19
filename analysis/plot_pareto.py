@@ -20,6 +20,7 @@ def plot_pareto(
     legend_bottom: float,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
 ) -> None:
 
     plot_columns_select_fn = partial(
@@ -38,7 +39,6 @@ def plot_pareto(
     all_data = all_data.groupby(
         by=["env", "algo", compare_size], as_index=False
     ).median()
-    print(all_data)
 
     # Change time in minutes
     all_data[f"{prefixe}time"] = all_data[f"{prefixe}time"].div(60)
@@ -93,7 +93,7 @@ def plot_pareto(
                 env_y_front.append(env_data[f"{prefixe}time"].values[indiv])
         env_x_front = np.array(env_x_front)
         env_y_front = np.array(env_y_front)
-        indexes = np.argsort(x_front)
+        indexes = np.argsort(env_x_front)
         env_x_front = env_x_front[indexes]
         env_y_front = env_y_front[indexes]
 
@@ -141,4 +141,5 @@ def plot_pareto(
         )
     except Exception:
         print(f"\n!!!WARNING!!! Cannot plot all_env_{prefixe}pareto.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()

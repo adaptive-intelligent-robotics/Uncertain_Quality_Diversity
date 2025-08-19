@@ -4,6 +4,7 @@ This repository contains the code for the following papers:
 - [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985), introducing the Uncertain Quality-Diversity (UQD) framework.
 - [Benchmark tasks for Quality-Diversity applied to Uncertain domains](https://dl.acm.org/doi/abs/10.1145/3583133.3596326), introducing benchmark tasks for UQD.
 - [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727), identifying the problem of fitness-reproducibility trade-off in UQD.
+- [Extract-QD Framework: A Generic Approach forQuality-Diversity in Noisy, Stochastic or Uncertain Domains](https://dl.acm.org/doi/epdf/10.1145/3712256.3726404), introducing Extract-MAP-Elites and the Extract-QD Framework.
 As all files evolve with papers, we provide Git tags to point to the exact code of each paper.
 
 This repository builds on top of the [QDax library](https://github.com/adaptive-intelligent-robotics/QDax), following its structure and defining new classes from the existing QDax classes.
@@ -12,21 +13,24 @@ This repository builds on top of the [QDax library](https://github.com/adaptive-
 
 ### Algorithms
 
-On top of all the algorithms already included in QDax, this repository provides implementations for the following UQD algorithms:
+On top of all the algorithms already included in QDax, this repository provides implementations for the following UQD algorithms, all implemented as QDax-compatible containers:
 - ME-Sampling
 - ME-Sampling-Reprod
 - Deep-Grid (from [Fast and stable MAP-Elites in noisy domains using deep grids](https://direct.mit.edu/isal/proceedings/isal2020/32/273/98397))
 - Archive-Sampling (AS) (from [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985))
+- AS-Reprod
 - Parallel-Adaptive-Sampling (from [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985))
 - ME-Weighted (from [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727))
 - ME-Delta (from [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727))
 - AS-Weighted (from [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727))
 - AS-Delta (from [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727))
 - MOME-R (from [Exploring the Performance-Reproducibility Trade-off in Quality-Diversity](https://ieeexplore.ieee.org/document/10912727))
+- Extract-ME (from [Extract-QD Framework: A Generic Approach forQuality-Diversity in Noisy, Stochastic or Uncertain Domains](https://dl.acm.org/doi/epdf/10.1145/3712256.3726404))
 
 It also provides the code for the following baselines:
 - ME-Random: a variant of ME that generates random offspring instead of selecting parents from the grid.
 - ME with a depth: a variant of ME that stores $d$ solutions per cell of the grid, $d$ being the depth. This is not expected to perform differently from ME, as the final returned grid only contains the top layer, it is only provided to faciliate later developments.
+- Adaptive-Sampling: a jax-compatible implementation of the first UQD algorithm proposed in [Map-elites for noisy domains by adaptive sampling](https://dl.acm.org/doi/abs/10.1145/3319619.3321904?casa_token=CJVMQp-r43kAAAAA:jFHeZl4uSZFriJOJi60xCAW1_X1e7BtKgCFm_9J4gTUe3SyxRDL1MsuLDLssO35GRY1LeTVPINQ). Note that this algorithm is intrinsically non-parallelisable because part of the evaluations are performed sequentially during the addition to the archive. While this code is written in Jax, it follows the original algorithm and is thus sequential and as a consequence was slower than all other algortihms. We recommand running this specific algorithm on CPU as it induces many data tranferts between GPU and CPU.
 
 ### Metrics
 
@@ -73,14 +77,6 @@ For example, to run it for `1000` generations on the `ant_omni` task, with sampl
 ```
 python3 main.py --container Archive-Sampling --emitter Mixing --num-iterations 1000 --sampling-size 4096 --env-name ant_omni
 ```
-
-To run only the benchmark task example from [Benchmark tasks for Quality-Diversity applied to Uncertain domains](https://arxiv.org/abs/2304.12454), you can use directly the correpsonding main file:
-
-```
-python3 main_uqd_benchmark_task.py alg_name=me noise_type=gaussian_fit
-```
-
-alg_name allows to specify the algorithm to run and noise_type the type of noise from the Benchmark paper.
 
 To run the analysis of the number of reevaluation provided in the appendix of [Uncertain Quality-Diversity: Evaluation methodology and new methods for Quality-Diversity in Uncertain Domains](https://ieeexplore.ieee.org/abstract/document/10120985), you can run directly the corresponding main file:
 

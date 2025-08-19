@@ -1,9 +1,11 @@
 import os
 import traceback
+from random import randint
 from typing import Dict
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from analysis.load_archives import get_folder_name
@@ -20,6 +22,8 @@ def plot_archives(
     compare_title: str,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
+    additional: bool = False,
 ) -> None:
 
     # Non-reevaluated repertoire
@@ -36,11 +40,13 @@ def plot_archives(
             min_max_frame=min_max_frame,
             compare_size=compare_size,
             compare_title=compare_title,
+            errors=errors,
         )
 
     except Exception:
         print("\n!!!WARNING!!! Cannot plot non-reevaluated repertoire.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
     # Reevaluated repertoire
     try:
@@ -57,31 +63,37 @@ def plot_archives(
                 min_max_frame=min_max_frame,
                 compare_size=compare_size,
                 compare_title=compare_title,
+                errors=errors,
             )
 
     except Exception:
         print("\n!!!WARNING!!! Cannot plot reeval repertoire.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
-    # Additional repertoire
-    try:
-        if "additional_folder" in config_frame.columns:
-            print(f"    Plotting Additional Archive for {single_compare_size}.")
-            folder_name = f"additional_folder"
-            sub_plot_archives(
-                file_name=f"{plot_folder}/{prefixe}additional_archive_{single_compare_size}.png",
-                title_name="Additional archive",
-                single_compare_size=single_compare_size,
-                env_order=env_order,
-                single_folder_name=folder_name,
-                config_frame=config_frame,
-                min_max_frame=min_max_frame,
-                compare_size=compare_size,
-                compare_title=compare_title,
-            )
-    except Exception:
-        print("\n!!!WARNING!!! Cannot plot additional repertoire.")
-        traceback.print_exc()
+    if additional:
+
+        # Additional repertoire
+        try:
+            if "additional_folder" in config_frame.columns:
+                print(f"    Plotting Additional Archive for {single_compare_size}.")
+                folder_name = f"additional_folder"
+                sub_plot_archives(
+                    file_name=f"{plot_folder}/{prefixe}additional_archive_{single_compare_size}.png",
+                    title_name="Additional archive",
+                    single_compare_size=single_compare_size,
+                    env_order=env_order,
+                    single_folder_name=folder_name,
+                    config_frame=config_frame,
+                    min_max_frame=min_max_frame,
+                    compare_size=compare_size,
+                    compare_title=compare_title,
+                    errors=errors,
+                )
+        except Exception:
+            print("\n!!!WARNING!!! Cannot plot additional repertoire.")
+            if errors:
+                traceback.print_exc()
 
     # Reevaluated fitness repertoire
     try:
@@ -98,10 +110,12 @@ def plot_archives(
                 min_max_frame=min_max_frame,
                 compare_size=compare_size,
                 compare_title=compare_title,
+                errors=errors,
             )
     except Exception:
         print("\n!!!WARNING!!! Cannot plot fit-reeval repee")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
     # Reevaluated desc repertoire
     try:
@@ -118,10 +132,12 @@ def plot_archives(
                 min_max_frame=min_max_frame,
                 compare_size=compare_size,
                 compare_title=compare_title,
+                errors=errors,
             )
     except Exception:
         print("\n!!!WARNING!!! Cannot plot desc-reeval repertoire.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
     # Variance fitness repertoire
     try:
@@ -138,10 +154,13 @@ def plot_archives(
                 min_max_frame=min_max_frame,
                 compare_size=compare_size,
                 compare_title=compare_title,
+                min_max_fit_var=True,
+                errors=errors,
             )
     except Exception:
         print("\n!!!WARNING!!! Cannot plot fit-var repertoire.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
     # Variance desc repertoire
     try:
@@ -158,10 +177,13 @@ def plot_archives(
                 min_max_frame=min_max_frame,
                 compare_size=compare_size,
                 compare_title=compare_title,
+                min_max_desc_var=True,
+                errors=errors,
             )
     except Exception:
         print("\n!!!WARNING!!! Cannot plot desc-var repertoire.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()
 
 
 def sub_plot_archives(
@@ -174,6 +196,9 @@ def sub_plot_archives(
     min_max_frame: pd.DataFrame,
     compare_size: str,
     compare_title: str,
+    min_max_fit_var: bool = False,
+    min_max_desc_var: bool = False,
+    errors: bool = False,
 ) -> None:
 
     # Get the envs and algos
@@ -194,30 +219,43 @@ def sub_plot_archives(
             & (config_frame[compare_size] == single_compare_size)
         ].reset_index(drop=True)
 
+        if env_config_frame.empty:
+            print(f"\n!!!WARNING!!! Size {single_compare_size} undefined for {env}.")
+            continue
+
         # Get all the corresponding min and max
         min_fitness = None
         max_fitness = None
-        min_fit_var = None
-        max_fit_var = None
-        min_desc_var = None
-        max_desc_var = None
         if min_max_frame is not None:
             env_min_max_frame = min_max_frame[min_max_frame["env"] == env]
             if not env_min_max_frame.empty:
-                min_fitness = env_min_max_frame["min_fitness"].values[0]
-                max_fitness = env_min_max_frame["max_fitness"].values[0]
-                min_fit_var = env_min_max_frame["min_fit_var"].values[0]
-                max_fit_var = env_min_max_frame["max_fit_var"].values[0]
-                min_desc_var = env_min_max_frame["min_desc_var"].values[0]
-                max_desc_var = env_min_max_frame["max_desc_var"].values[0]
-        min_bd_list = str(env_config_frame["min_bd"][0])[1:-1].split(" ")
-        if "" in min_bd_list:
-            min_bd_list.remove("")
-        max_bd_list = str(env_config_frame["max_bd"][0])[1:-1].split(" ")
-        if "" in max_bd_list:
-            max_bd_list.remove("")
-        min_bd = [float(bd) for bd in min_bd_list]
-        max_bd = [float(bd) for bd in max_bd_list]
+                if min_max_fit_var:
+                    min_fitness = env_min_max_frame["min_fit_var"].values[0]
+                    max_fitness = env_min_max_frame["max_fit_var"].values[0]
+                elif min_max_desc_var:
+                    min_fitness = env_min_max_frame["min_desc_var"].values[0]
+                    max_fitness = env_min_max_frame["max_desc_var"].values[0]
+                else:
+                    min_fitness = env_min_max_frame["min_fitness"].values[0]
+                    max_fitness = env_min_max_frame["max_fitness"].values[0]
+        min_bd = [0, 0]
+        if env_config_frame["min_bd"].values[0] != []:
+            if "_" in env_config_frame["min_bd"].values[0]:
+                min_bd_list = str(env_config_frame["min_bd"].values[0]).split("_")
+            else:
+                min_bd_list = str(env_config_frame["min_bd"].values[0])[1:-1].split(" ")
+            if "" in min_bd_list:
+                min_bd_list.remove("")
+            min_bd = [float(bd) for bd in min_bd_list]
+        max_bd = [1, 1]
+        if env_config_frame["max_bd"].values[0] != []:
+            if "_" in env_config_frame["max_bd"].values[0]:
+                max_bd_list = str(env_config_frame["max_bd"].values[0]).split("_")
+            else:
+                max_bd_list = str(env_config_frame["max_bd"].values[0])[1:-1].split(" ")
+            if "" in max_bd_list:
+                max_bd_list.remove("")
+            max_bd = [float(bd) for bd in max_bd_list]
 
         # For each algo for this env and size
         for ncol in range(ncols):
@@ -226,6 +264,8 @@ def sub_plot_archives(
             algo_config_frame = env_config_frame[
                 env_config_frame["algo"] == algo
             ].reset_index(drop=True)
+            if algo_config_frame.empty:
+                continue
 
             # Get the correpsonding axis
             if nrows == 1 and ncols == 1:
@@ -242,15 +282,18 @@ def sub_plot_archives(
             if ncol == ncols - 1:
                 colorbar = True
 
-            # Taking the first one randomly
+            # Taking one randomly
+            index = randint(0, algo_config_frame.shape[0])
             try:
-                if single_folder_name == "repertoire_folder" and "MOME" in algo:
+                if single_folder_name == "repertoire_folder" and (
+                    "MOME" in algo or "PE" in algo
+                ):
                     repertoire_folder = get_folder_name(
-                        algo_config_frame, "projected_repertoire_folder", 0
+                        algo_config_frame, "projected_repertoire_folder", index
                     )
                 else:
                     repertoire_folder = get_folder_name(
-                        algo_config_frame, single_folder_name, 0
+                        algo_config_frame, single_folder_name, index
                     )
                 fitnesses = jnp.load(os.path.join(repertoire_folder, "fitnesses.npy"))
                 descriptors = jnp.load(
@@ -274,7 +317,8 @@ def sub_plot_archives(
                 print(
                     f"\n!!!WARNING!!! Cannot plot {single_folder_name} for {env} and {algo}."
                 )
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
             # Add algo name in first line
             if nrow == 0:

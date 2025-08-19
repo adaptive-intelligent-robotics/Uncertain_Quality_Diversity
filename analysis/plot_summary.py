@@ -10,7 +10,7 @@ from analysis.utils_plot import plot_columns_select
 
 def plot_summary(
     plot_folder: str,
-    all_losses: pd.DataFrame,
+    all_finals: pd.DataFrame,
     all_times: pd.DataFrame,
     all_var: pd.DataFrame,
     color_frame: pd.DataFrame,
@@ -22,6 +22,7 @@ def plot_summary(
     legend_bottom: float,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
 ) -> None:
 
     plot_columns_select_fn = partial(
@@ -36,7 +37,7 @@ def plot_summary(
     )
 
     # Concatenate the three dataframe
-    all_data = pd.concat([all_times, all_losses, all_var], ignore_index=True)
+    all_data = pd.concat([all_times, all_finals, all_var], ignore_index=True)
 
     # Use env_name as column
     env_names = all_data["env"].drop_duplicates().values
@@ -67,9 +68,9 @@ def plot_summary(
         rows = [
             f"{prefixe}reeval_qd_score",
             f"{prefixe}reeval_max_fitness",
-            f"loss_{prefixe}reeval_qd_score",
-            f"{prefixe}avg_desc_var_qd_score",
-            f"{prefixe}avg_fit_var_qd_score",
+            f"loss_{prefixe}qd_score",
+            f"{prefixe}desc_var_avg",
+            f"{prefixe}fit_var_avg",
             f"{prefixe}time",
         ]
         rows_name = [
@@ -101,4 +102,5 @@ def plot_summary(
         )
     except Exception:
         print(f"\n!!!WARNING!!! Cannot plot all_env_{prefixe}metrics-size.")
-        traceback.print_exc()
+        if errors:
+            traceback.print_exc()

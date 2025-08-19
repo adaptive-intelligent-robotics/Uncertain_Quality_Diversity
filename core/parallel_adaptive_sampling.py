@@ -1,14 +1,22 @@
+"""Core components of the MAP-Elites algorithm."""
 from __future__ import annotations
 
 import os
 from functools import partial
-from typing import Callable, Optional, Tuple
+from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
 from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.core.emitters.emitter import Emitter, EmitterState
-from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, Metrics, RNGKey
+from qdax.custom_types import (
+    Descriptor,
+    ExtraScores,
+    Fitness,
+    Genotype,
+    Metrics,
+    RNGKey,
+)
 
 from core.archive_sampling import ArchiveSampling
 
@@ -26,21 +34,21 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         emitter: Emitter,
         metrics_function: Callable[[MapElitesRepertoire], Metrics],
         depth: int,
+        max_number_evals: int,
         fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
-        num_iterations: int,
         sampling_size: int,
         batch_size: int,
         max_num_samples: int,
         use_evals: str,
-        archive_out_sampling: bool = False,
     ) -> None:
         self._scoring_function = scoring_function
         self._emitter = emitter
         self._metrics_function = metrics_function
         self._depth = depth
+        self._max_number_evals = max_number_evals
         self._fitness_extractor = fitness_extractor
         self._fitness_reproducibility_extractor = fitness_reproducibility_extractor
         self._descriptor_extractor = descriptor_extractor
@@ -48,7 +56,6 @@ class ParallelAdaptiveSampling(ArchiveSampling):
             descriptor_reproducibility_extractor
         )
         self._sampling_size = sampling_size
-        self._archive_out_sampling = archive_out_sampling
 
         # Number of evaluations selection mode
         valid_evals = ["max", "min", "mean", "median"]
@@ -59,9 +66,9 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         assert max_num_samples > 0, "!!!ERROR!!! max_num_samples should be > 0."
         self._max_num_samples = max_num_samples
 
-        # Archive Samplin required attributes
-        self._offspring_num_samples = 1
-        self._max_total_evals = num_iterations + self._max_num_samples
+        # Archive Sampling required attributes
+        self._num_samples = 1
+        self._repertoire_num_samples = 1
 
         # Externally used attributes
         self.num_samples = 1
@@ -73,9 +80,9 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         num_samples: int,
         batch_size: int,
         repertoire: MapElitesRepertoire,
-        emitter_state: Optional[EmitterState],
+        emitter_state: EmitterState,
         random_key: RNGKey,
-    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[MapElitesRepertoire, EmitterState, Metrics, RNGKey]:
         """
         Performs one iteration of the jitable part of Parallel-Adaptive-Sampling.
 
@@ -95,7 +102,7 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         # 1. Emit offspring #
 
         # generate offsprings with the emitter
-        genotypes, random_key = self._emitter.emit(
+        genotypes, extra_info, random_key = self._emitter.emit(
             repertoire, emitter_state, random_key
         )
 
@@ -107,20 +114,35 @@ class ParallelAdaptiveSampling(ArchiveSampling):
 
         # evaluate all individuals already in the archive and offspring
         (
+            repertoire,
+            extract_genotypes,
+            extract_fitnesses,
+            extract_descriptors,
+            random_key,
+        ) = self._extract_repertoire(repertoire=repertoire, random_key=random_key)
+        (
             all_genotypes,
             all_fitnesses,
             all_descriptors,
             all_extra_scores,
+            emit_fitnesses,
+            emit_descriptors,
+            emit_extra_scores,
             random_key,
-        ) = self._scoring_repertoire_offspring(
-            repertoire, genotypes, num_samples, random_key
+        ) = self._evaluate(
+            emit_genotypes=genotypes,
+            extract_genotypes=extract_genotypes,
+            extract_fitnesses=extract_fitnesses,
+            extract_descriptors=extract_descriptors,
+            num_samples=num_samples,
+            repertoire_num_samples=1,
+            random_key=random_key,
         )
 
         ##############################
         # 3. Add back to the archive #
 
         # empty repertoire
-        total_evaluations = repertoire.total_evaluations
         repertoire = repertoire.empty()
 
         # add everything back to the archive
@@ -137,25 +159,18 @@ class ParallelAdaptiveSampling(ArchiveSampling):
             batch_size * num_samples
             + jax.tree_util.tree_leaves(repertoire.genotypes_depth)[0].shape[0]
         )
-        repertoire = repertoire.set_total_evaluations(total_evaluations + total_indivs)
 
         ############################
         # 4. Perform final updates #
 
         # update emitter state after scoring is made
-        expected_fitnesses = self._fitness_extractor(
-            all_fitnesses.at[:batch_size].get()
-        )
-        expected_descriptors = self._descriptor_extractor(
-            all_descriptors.at[:batch_size].get()
-        )
         emitter_state = self._emitter.state_update(
             emitter_state=emitter_state,
             repertoire=repertoire,
             genotypes=genotypes,
-            fitnesses=expected_fitnesses,
-            descriptors=expected_descriptors,
-            extra_scores=all_extra_scores,
+            fitnesses=emit_fitnesses,
+            descriptors=emit_descriptors,
+            extra_scores={**emit_extra_scores, **extra_info},
         )
 
         # update the metrics
@@ -166,9 +181,9 @@ class ParallelAdaptiveSampling(ArchiveSampling):
     def update(
         self,
         repertoire: MapElitesRepertoire,
-        emitter_state: Optional[EmitterState],
+        emitter_state: EmitterState,
         random_key: RNGKey,
-    ) -> Tuple[MapElitesRepertoire, Optional[EmitterState], Metrics, RNGKey]:
+    ) -> Tuple[MapElitesRepertoire, EmitterState, Metrics, RNGKey]:
         """
         !!!WARNING!!! Un-jitable as it is now
 
@@ -192,37 +207,26 @@ class ParallelAdaptiveSampling(ArchiveSampling):
         )
 
         # Chose number of samples for the offspring
-        if jnp.sum(repertoire.evaluations_depth > 0) == 0:
+        evaluations_depth = jnp.sum(
+            jnp.logical_not(jnp.isnan(repertoire.fitnesses_depth_all)),
+            axis=2,
+        )
+        if jnp.sum(evaluations_depth > 0) == 0:
             num_evaluations = 1
         elif self._use_evals == "max":
-            num_evaluations = int(jnp.nanmax(repertoire.evaluations_depth))
+            num_evaluations = int(jnp.nanmax(evaluations_depth))
         elif self._use_evals == "min":
-            num_evaluations = int(
-                jnp.nanmin(
-                    repertoire.evaluations_depth[repertoire.evaluations_depth > 0]
-                )
-            )
+            num_evaluations = int(jnp.nanmin(evaluations_depth[evaluations_depth > 0]))
         elif self._use_evals == "mean":
-            num_evaluations = int(
-                jnp.nanmean(
-                    repertoire.evaluations_depth[repertoire.evaluations_depth > 0]
-                )
-            )
+            num_evaluations = int(jnp.nanmean(evaluations_depth[evaluations_depth > 0]))
         elif self._use_evals == "median":
             num_evaluations = int(
-                jnp.nanmedian(
-                    repertoire.evaluations_depth[repertoire.evaluations_depth > 0]
-                )
+                jnp.nanmedian(evaluations_depth[evaluations_depth > 0])
             )
         num_samples = max(1, min(self._max_num_samples, num_evaluations))
 
         # Remove part of the offspring (or samples) to match samples per generation
-        if self._archive_out_sampling:
-            num_indivs = 0
-        else:
-            num_indivs = jax.tree_util.tree_leaves(repertoire.genotypes_depth)[0].shape[
-                0
-            ]
+        num_indivs = jax.tree_util.tree_leaves(repertoire.genotypes_depth)[0].shape[0]
         if self._sampling_size > 0:
             batch_size = (self._sampling_size - num_indivs) // num_samples
             while batch_size < 1 and num_samples > 1:

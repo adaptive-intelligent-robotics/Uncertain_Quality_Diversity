@@ -14,12 +14,12 @@ from matplotlib.colors import Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.core.containers.repertoire import Repertoire
-from qdax.types import Genotype, RNGKey
+from qdax.custom_types import Genotype, RNGKey
 from qdax.utils.plotting import get_voronoi_finite_polygons_2d
 from scipy.spatial.distance import cdist, euclidean
+from set_up_environment import ENV_CONTROL, ENV_OPTIMISATION, set_up_environment
 
 from analysis.plot_archives import get_folder_name
-from set_up_environment import ENV_CONTROL, ENV_OPTIMISATION, set_up_environment
 
 
 def plot_visualisations(
@@ -63,8 +63,6 @@ def plot_visualisations(
                 fit_std = 0.0
                 desc_std = 0.0
                 params_std = 0.0
-                gaussian_pos = False
-                gaussian_vel = False
                 print("      Loading environment:", env_name, "without noise.")
             elif "_fit" in env_name and "_desc" in env_name and "_params" in env_name:
                 fit_idx = env_name.find("_fit")
@@ -76,29 +74,18 @@ def plot_visualisations(
                     fit_std = float(env_name[fit_idx + 4 : desc_idx])
                 desc_std = float(env_name[desc_idx + 5 : params_idx])
                 params_std = float(env_name[params_idx + 7 :])
-                gaussian_pos = False
-                gaussian_vel = False
                 if "_fit_fit" in env_name:
-                    env_name = env_name[:fit_idx + 4]
+                    env_name = env_name[: fit_idx + 4]
                 else:
                     env_name = env_name[:fit_idx]
                 print("      Loading environment:", env_name)
                 print("        With fitness std:", fit_std)
                 print("        With desc std:", desc_std)
                 print("        With parameters std:", params_std)
-            elif "_velnormal" in env_name or "_posnormal" in env_name:
-                if "_posnormal" in env_name:
-                    gaussian_pos = True
-                    env_name = env_name[: -len("_posnormal")]
-                if "_velnormal" in env_name:
-                    gaussian_vel = True
-                    env_name = env_name[: -len("_velnormal")]
             else:
                 fit_std = 0
                 desc_std = 0
                 params_std = 0
-                gaussian_pos = False
-                gaussian_vel = False
             if params_std == 0 and "params_std" in config_frame.columns:
                 if config_frame["params_std"][line] == config_frame["params_std"][line]:
                     params_std = config_frame["params_std"]
@@ -127,8 +114,6 @@ def plot_visualisations(
                 params_std=params_std,
                 batch_size=replications,
                 policy_hidden_layer_sizes=policy_hidden_layer_sizes,
-                gaussian_pos=gaussian_pos,
-                gaussian_vel=gaussian_vel,
                 delta_fitness=0,
                 delta_reproducibility=0,
                 random_key=random_key,

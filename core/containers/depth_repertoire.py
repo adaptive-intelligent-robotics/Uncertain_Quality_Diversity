@@ -7,9 +7,15 @@ import flax
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
-
 from qdax.core.containers.mapelites_repertoire import get_cells_indices
-from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype, RNGKey
+from qdax.custom_types import (
+    Centroid,
+    Descriptor,
+    ExtraScores,
+    Fitness,
+    Genotype,
+    RNGKey,
+)
 
 
 class DeepMapElitesRepertoire(flax.struct.PyTreeNode):

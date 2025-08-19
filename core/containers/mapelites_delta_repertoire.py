@@ -1,7 +1,3 @@
-"""This file contains util functions and a class to define
-a repertoire, used to store individuals in the MAP-Elites
-algorithm as well as several variants."""
-
 from __future__ import annotations
 
 from functools import partial
@@ -14,10 +10,10 @@ from qdax.core.containers.mapelites_repertoire import (
     MapElitesRepertoire,
     get_cells_indices,
 )
-from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype
+from qdax.custom_types import Centroid, Descriptor, ExtraScores, Fitness, Genotype
 
 
-class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
+class MapElitesDeltaRepertoire(MapElitesRepertoire):
     """Class for the repertoire in Map Elites when considering the
     fitness-reproducibility trade-off problem.
     """
@@ -56,7 +52,7 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
     @classmethod
     def load(
         cls, reconstruction_fn: Callable, path: str = "./"
-    ) -> MapElitesDeltaReprodRepertoire:
+    ) -> MapElitesDeltaRepertoire:
         """Loads a MAP Elites Repertoire.
 
         Args:
@@ -95,10 +91,8 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
             "fitness_reproducibility_extractor",
             "descriptor_extractor",
             "descriptor_reproducibility_extractor",
-            "use_weighting",
             "delta_fitness",
             "delta_reproducibility",
-            "rho",
         ),
     )
     def add(
@@ -111,11 +105,9 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
-        use_weighting: bool,
         delta_fitness: float,
         delta_reproducibility: float,
-        rho: float,
-    ) -> MapElitesDeltaReprodRepertoire:
+    ) -> MapElitesDeltaRepertoire:
         """
         Add a batch of elements to the repertoire.
 
@@ -174,103 +166,11 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
             max_fitness=new_max_fitness,
         )
 
-        # If using weighting
-        if use_weighting:
-
-            # compute the weight based on the delta
-            weight_fitness = 1
-            weight_reproducibility = (delta_fitness + rho) / (
-                delta_reproducibility + rho
-            )
-
-            # compute comparison metrics for new individuals
-            batch_of_comparison_metrics = (
-                weight_fitness * batch_of_fitnesses
-                + weight_reproducibility * batch_of_reproducibilities
-            )
-            batch_of_comparison_metrics = jnp.where(
-                jnp.isnan(batch_of_comparison_metrics),
-                -jnp.inf,
-                batch_of_comparison_metrics,
-            )
-
-            # get metrics segment max
-            best_comparison_metrics = jax.ops.segment_max(
-                batch_of_comparison_metrics,
-                batch_of_indices.squeeze(axis=-1),
-                num_segments=num_centroids,
-            )
-            cond_values = jnp.take_along_axis(
-                best_comparison_metrics, batch_of_indices, 0
-            )
-
-            # put dominated fitness to -jnp.inf
-            batch_of_comparison_metrics = jnp.where(
-                batch_of_comparison_metrics == cond_values,
-                x=batch_of_comparison_metrics,
-                y=-jnp.inf,
-            )
-
-            # compute comparison metrics for repertoire content
-            repertoire_comparison_metrics = (
-                weight_fitness * new_repertoire.fitnesses
-                + weight_reproducibility * new_repertoire.reproducibilities
-            )
-            repertoire_comparison_metrics = jnp.where(
-                new_repertoire.fitnesses > -jnp.inf,
-                repertoire_comparison_metrics,
-                -jnp.inf,
-            )
-            repertoire_comparison_metrics = jnp.expand_dims(
-                repertoire_comparison_metrics,
-                axis=-1,
-            )
-
-            # get addition condition
-            current_comparison_metrics = jnp.take_along_axis(
-                repertoire_comparison_metrics, batch_of_indices, 0
-            )
-            addition_condition = (
-                batch_of_comparison_metrics > current_comparison_metrics
-            )
-
-            # assign fake position when relevant : num_centroids is out of bound
-            batch_of_indices = jnp.where(
-                addition_condition, x=batch_of_indices, y=num_centroids
-            )
-
-            # create new repertoire
-            new_repertoire_genotypes = jax.tree_util.tree_map(
-                lambda repertoire_genotypes, new_genotypes: repertoire_genotypes.at[
-                    batch_of_indices.squeeze(axis=-1)
-                ].set(new_genotypes),
-                new_repertoire.genotypes,
-                batch_of_genotypes,
-            )
-
-            # compute new fitness and descriptors
-            new_fitnesses = new_repertoire.fitnesses.at[
-                batch_of_indices.squeeze(axis=-1)
-            ].set(batch_of_fitnesses.squeeze(axis=-1))
-            new_reproducibilities = new_repertoire.reproducibilities.at[
-                batch_of_indices.squeeze(axis=-1)
-            ].set(batch_of_reproducibilities.squeeze(axis=-1))
-            new_descriptors = new_repertoire.descriptors.at[
-                batch_of_indices.squeeze(axis=-1)
-            ].set(batch_of_descriptors)
-
-            return new_repertoire.replace(
-                genotypes=new_repertoire_genotypes,
-                fitnesses=new_fitnesses,
-                reproducibilities=new_reproducibilities,
-                descriptors=new_descriptors,
-            )
-
-        # If using delta version, add individuals one by one
+        # Add individuals one by one
         def _add_one(
-            carry: MapElitesDeltaReprodRepertoire,
+            carry: MapElitesDeltaRepertoire,
             data: Tuple[Genotype, Descriptor, Fitness, jnp.ndarray, jnp.ndarray],
-        ) -> Tuple[MapElitesDeltaReprodRepertoire, Any]:
+        ) -> Tuple[MapElitesDeltaRepertoire, Any]:
 
             # unwrap data
             genotype, descriptor, fitness, reproducibility, index = data
@@ -345,10 +245,8 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
-        use_weighting: bool,
         delta_fitness: float,
         delta_reproducibility: float,
-        rho: float,
     ) -> MapElitesRepertoire:
         """
         Initialize a Map-Elites repertoire with an initial population of genotypes.
@@ -387,10 +285,8 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
             fitness_reproducibility_extractor=fitness_reproducibility_extractor,
             descriptor_extractor=descriptor_extractor,
             descriptor_reproducibility_extractor=descriptor_reproducibility_extractor,
-            use_weighting=use_weighting,
             delta_fitness=delta_fitness,
             delta_reproducibility=delta_reproducibility,
-            rho=rho,
         )
 
         return new_repertoire  # type: ignore
@@ -400,7 +296,7 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
         cls,
         genotype: Genotype,
         centroids: Centroid,
-    ) -> MapElitesDeltaReprodRepertoire:
+    ) -> MapElitesDeltaRepertoire:
         """Initialize a Map-Elites repertoire with an initial population of
         genotypes. Requires the definition of centroids that can be computed
         with any method such as CVT or Euclidean mapping.
@@ -447,12 +343,12 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
         )
 
     @jax.jit
-    def empty(self) -> MapElitesDeltaReprodRepertoire:
+    def empty(self) -> MapElitesDeltaRepertoire:
         """
         Empty the grid from all existing individuals.
 
         Returns:
-            An empty MapElitesDeltaReprodRepertoire
+            An empty MapElitesDeltaRepertoire
         """
 
         new_fitnesses = jnp.full_like(self.fitnesses, -jnp.inf)
@@ -461,7 +357,7 @@ class MapElitesDeltaReprodRepertoire(MapElitesRepertoire):
         new_max_reproducibility = -jnp.inf * jnp.ones_like(self.max_reproducibility)
         new_max_fitness = -jnp.inf * jnp.ones_like(self.max_fitness)
         new_genotypes = jax.tree_map(lambda x: jnp.zeros_like(x), self.genotypes)
-        return MapElitesDeltaReprodRepertoire(
+        return MapElitesDeltaRepertoire(
             genotypes=new_genotypes,
             fitnesses=new_fitnesses,
             reproducibilities=new_reproducibilities,

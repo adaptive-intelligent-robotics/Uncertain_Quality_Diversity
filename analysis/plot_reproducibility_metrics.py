@@ -19,6 +19,7 @@ def plot_reproducibility_metrics(
     legend_bottom: float,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
 ) -> None:
 
     plot_fn = partial(
@@ -72,7 +73,8 @@ def plot_reproducibility_metrics(
             )
         except Exception:
             print(f"\n!!!WARNING!!! Cannot plot {prefixe}reproducibilities for {env}.")
-            traceback.print_exc()
+            if errors:
+                traceback.print_exc()
 
         # Second, plot reeval reproducibilities across size with metrics as lines
         try:
@@ -103,4 +105,5 @@ def plot_reproducibility_metrics(
             print(
                 f"\n!!!WARNING!!! Cannot plot {prefixe}reeval_reproducibilities for {env}."
             )
-            traceback.print_exc()
+            if errors:
+                traceback.print_exc()

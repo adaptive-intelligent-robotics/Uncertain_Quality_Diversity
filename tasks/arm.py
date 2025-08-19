@@ -1,9 +1,8 @@
-import abc
 from typing import List, Tuple
 
 import jax
 import jax.numpy as jnp
-from qdax.types import Descriptor, ExtraScores, Fitness, Genotype, RNGKey
+from qdax.custom_types import Descriptor, ExtraScores, Fitness, Genotype, RNGKey
 
 
 def arm(params: Genotype) -> Tuple[Fitness, Descriptor]:
@@ -88,7 +87,7 @@ def noisy_arm_scoring_function(
     )
 
 
-class ArmNoisy(abc.ABC):
+class ArmNoisy:
     def scoring_fn(
         self, params: Genotype, random_key: RNGKey
     ) -> Tuple[Fitness, Descriptor, ExtraScores, RNGKey]:
@@ -105,6 +104,11 @@ class ArmNoisy(abc.ABC):
         new_desc = self.apply_noise_on_desc(params_noisy, fit, desc, subkey)
 
         return new_fit, new_desc, {}, random_key
+
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.zeros((1,))
 
     def apply_noise_on_params(self, params: Genotype, random_key: RNGKey) -> Genotype:
         return params
@@ -133,6 +137,11 @@ class ArmGaussianNoise(ArmNoisy):
         self.fit_std = fit_std
         self.desc_std = desc_std
         self.params_std = params_std
+
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.asrray([self.fit_std, self.desc_std, self.params_std])
 
     def apply_noise_on_params(self, params: Genotype, random_key: RNGKey) -> Genotype:
         return (
@@ -176,6 +185,11 @@ class ArmBimodalGaussianFitness(ArmNoisy):
         self.fit_std_1 = fit_std_1
         self.fit_std_2 = fit_std_2
         self.mean_fitness_2 = mean_fitness_2
+
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.asrray([self.fit_std_1, self.fit_std_2])
 
     def get_noise(self, random_key: RNGKey) -> jnp.ndarray:
         def use_mode_1(_random_key: RNGKey) -> jnp.ndarray:
@@ -237,6 +251,11 @@ class ArmBimodalGaussianDesc(ArmNoisy):
             mean_desc_2, dtype=jnp.float32
         )  # should be a vector of length 2
 
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.asrray([self.desc_std_1, self.desc_std_2])
+
     def get_noise(self, random_key: RNGKey) -> jnp.ndarray:
         def use_mode_1(_random_key: RNGKey) -> jnp.ndarray:
             _random_key, _subkey = jax.random.split(_random_key)
@@ -283,6 +302,11 @@ class ArmSelectedJointsNoise(ArmNoisy):
         self.params_std = params_std
         self.no_fitness = no_fitness
 
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.asrray([self.params_std])
+
     def get_noise(self, random_key: RNGKey) -> jnp.ndarray:
         return (
             jax.random.normal(random_key, shape=(len(self.selected_indexes),))
@@ -319,6 +343,15 @@ class ArmGaussianDescBiVarianceNoise(ArmNoisy):
         )  # should be a vector of length 2
         self.no_fitness = no_fitness
 
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return jnp.where(
+            jnp.prod(param - 0.5) >= 0,
+            self.desc_std_1,
+            self.desc_std_2,
+        )
+
     def apply_noise_on_params(self, params: Genotype, random_key: RNGKey) -> Genotype:
         return params
 
@@ -327,12 +360,10 @@ class ArmGaussianDescBiVarianceNoise(ArmNoisy):
     ) -> Fitness:
         return jnp.zeros_like(fitness) if self.no_fitness else fitness
 
-    def _apply_noise(self, param, random_key: RNGKey) -> None:
-        std = jnp.where(
-            jnp.prod(param - 0.5) >= 0,
-            self.desc_std_1,
-            self.desc_std_2,
-        )
+    def _apply_noise(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor, random_key: RNGKey
+    ) -> Genotype:
+        std = self.get_std(param=param, fitness=fitness, desc=desc)
         _random_key, _subkey = jax.random.split(random_key)
         cov_1 = jnp.power(
             jnp.diag(std), 2.0
@@ -345,7 +376,7 @@ class ArmGaussianDescBiVarianceNoise(ArmNoisy):
         batch_size = desc.shape[0]
         random_key, *subkeys = jax.random.split(random_key, batch_size + 1)
         subkeys = jnp.asarray(subkeys)
-        return desc + jax.vmap(self._apply_noise)(params, subkeys)
+        return desc + jax.vmap(self._apply_noise)(params, fitness, desc, subkeys)
 
 
 class ArmGaussianDescFitPropVarianceNoise(ArmNoisy):
@@ -357,6 +388,15 @@ class ArmGaussianDescFitPropVarianceNoise(ArmNoisy):
         self.max_fitness = 0
         self.no_fitness = no_fitness
 
+    def get_std(
+        self, param: Genotype, fitness: Fitness, desc: Descriptor
+    ) -> jnp.ndarray:
+        return self.prop_factors * (
+            1
+            - (jnp.clip(fitness, self.min_fitness, self.max_fitness) - self.min_fitness)
+            / (self.max_fitness - self.min_fitness)
+        )
+
     def apply_noise_on_params(self, params: Genotype, random_key: RNGKey) -> Genotype:
         return params
 
@@ -365,12 +405,10 @@ class ArmGaussianDescFitPropVarianceNoise(ArmNoisy):
     ) -> Fitness:
         return jnp.zeros_like(fitness) if self.no_fitness else fitness
 
-    def _apply_noise(self, fitness, random_key) -> None:
-        std = self.prop_factors * (
-            1
-            - (jnp.clip(fitness, self.min_fitness, self.max_fitness) - self.min_fitness)
-            / (self.max_fitness - self.min_fitness)
-        )
+    def _apply_noise(
+        self, params: Genotype, fitness: Fitness, desc: Descriptor, random_key: RNGKey
+    ) -> Fitness:
+        std = self.get_std(param=params, fitness=fitness, desc=desc)
         _random_key, _subkey = jax.random.split(random_key)
         cov_1 = jnp.power(
             jnp.diag(std), 2.0
@@ -383,4 +421,4 @@ class ArmGaussianDescFitPropVarianceNoise(ArmNoisy):
         batch_size = desc.shape[0]
         random_key, *subkeys = jax.random.split(random_key, batch_size + 1)
         subkeys = jnp.asarray(subkeys)
-        return desc + jax.vmap(self._apply_noise)(fitness, subkeys)
+        return desc + jax.vmap(self._apply_noise)(params, fitness, desc, subkeys)

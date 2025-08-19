@@ -20,6 +20,8 @@ def find_min_max(
     plot_folder: str,
     config_frame: pd.DataFrame,
     prefixe: str = "",
+    errors: bool = False,
+    additional: bool = False,
 ) -> pd.DataFrame:
     """Function to find all the min and max for archives."""
 
@@ -54,6 +56,8 @@ def find_min_max(
         # Initialising all min and max
         min_fitness = jnp.inf
         max_fitness = -jnp.inf
+        min_reeval_fitness = jnp.inf
+        max_reeval_fitness = -jnp.inf
         min_fit_var = jnp.inf
         max_fit_var = -jnp.inf
         min_desc_var = jnp.inf
@@ -74,23 +78,23 @@ def find_min_max(
                     max_fitness,
                 )
             except Exception:
-                print("\n!!!WARNING!!! Cannot open repertoire for:")
-                print(f"{env_config_frame.loc[line]}")
-                traceback.print_exc()
+                print("!!!WARNING!!! Cannot extract min and max fitness.")
+                if errors:
+                    traceback.print_exc()
 
-            # Update min_fitness and max_fitness
+            # Update min_reeval_fitness and max_reeval_fitness
             try:
-                min_fitness, max_fitness = _new_min_max(
+                min_reeval_fitness, max_reeval_fitness = _new_min_max(
                     env_config_frame,
                     f"{prefixe}reeval_repertoire_folder",
                     line,
-                    min_fitness,
-                    max_fitness,
+                    min_reeval_fitness,
+                    max_reeval_fitness,
                 )
             except Exception:
-                print(f"\n!!!WARNING!!! Cannot open {prefixe}reeval_repertoire for:")
-                print(f"{env_config_frame.loc[line]}")
-                traceback.print_exc()
+                print("!!!WARNING!!! Cannot extract min and max reeval fitness.")
+                if errors:
+                    traceback.print_exc()
 
             # Update min_fit_var and max_fit_var
             try:
@@ -102,9 +106,9 @@ def find_min_max(
                     max_fit_var,
                 )
             except Exception:
-                print(f"\n!!!WARNING!!! Cannot open {prefixe}fit_var_repertoire for:")
-                print(f"{env_config_frame.loc[line]}")
-                traceback.print_exc()
+                print("!!!WARNING!!! Cannot extract min and max fit var.")
+                if errors:
+                    traceback.print_exc()
 
             # Update min_desc_var and max_desc_var
             try:
@@ -116,23 +120,25 @@ def find_min_max(
                     max_desc_var,
                 )
             except Exception:
-                print(f"\n!!!WARNING!!! Cannot open {prefixe}desc_var_repertoire for:")
-                print(f"{env_config_frame.loc[line]}")
-                traceback.print_exc()
+                print("!!!WARNING!!! Cannot extract min and max desc var.")
+                if errors:
+                    traceback.print_exc()
 
-            # Update min_additional and max_additional
-            try:
-                min_additional, max_additional = _new_min_max(
-                    env_config_frame,
-                    "additional_folder",
-                    line,
-                    min_additional,
-                    max_additional,
-                )
-            except Exception:
-                print("\n!!!WARNING!!! Cannot open additional repertoire for:")
-                print(f"{env_config_frame.loc[line]}")
-                traceback.print_exc()
+            if additional:
+
+                # Update min_additional and max_additional
+                try:
+                    min_additional, max_additional = _new_min_max(
+                        env_config_frame,
+                        "additional_folder",
+                        line,
+                        min_additional,
+                        max_additional,
+                    )
+                except Exception:
+                    print("!!!WARNING!!! Cannot extract min and max additional.")
+                    if errors:
+                        traceback.print_exc()
 
         # Update the frame for this env
         min_max_frame = pd.concat(
@@ -143,6 +149,8 @@ def find_min_max(
                         "env": [env],
                         "min_fitness": min_fitness,
                         "max_fitness": max_fitness,
+                        "min_reeval_fitness": min_reeval_fitness,
+                        "max_reeval_fitness": max_reeval_fitness,
                         "min_fit_var": min_fit_var,
                         "max_fit_var": max_fit_var,
                         "min_desc_var": min_desc_var,

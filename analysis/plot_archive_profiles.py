@@ -23,6 +23,7 @@ def plot_archive_profiles(
     legend_bottom: float,
     prefixe: str = "",
     prefixe_title: str = "",
+    errors: bool = False,
 ) -> None:
 
     # Create the archive profile dataframe
@@ -76,7 +77,8 @@ def plot_archive_profiles(
                     except Exception:
                         print("\n!!!WARNING!!! Cannot open reeval repertoire.")
                         print(sub_config_frame)
-                        traceback.print_exc()
+                        if errors:
+                            traceback.print_exc()
                         data["reeval_profile"] = np.zeros_like(profiles)
                 else:
                     data["reeval_profile"] = np.zeros_like(profiles)
@@ -102,7 +104,8 @@ def plot_archive_profiles(
                     except Exception:
                         print("\n!!!WARNING!!! Cannot open fit-reeval repertoire.")
                         print(sub_config_frame)
-                        traceback.print_exc()
+                        if errors:
+                            traceback.print_exc()
                         data["fit_reeval_profile"] = np.zeros_like(profiles)
                 else:
                     data["fit_reeval_profile"] = np.zeros_like(profiles)
@@ -128,7 +131,8 @@ def plot_archive_profiles(
                     except Exception:
                         print("\n!!!WARNING!!! Cannot open desc-reeval repertoire.")
                         print(sub_config_frame)
-                        traceback.print_exc()
+                        if errors:
+                            traceback.print_exc()
                         data["desc_reeval_profile"] = np.zeros_like(profiles)
                 else:
                     data["desc_reeval_profile"] = np.zeros_like(profiles)
@@ -145,7 +149,8 @@ def plot_archive_profiles(
             except Exception:
                 print("\n!!!WARNING!!! Cannot plot archive profile.")
                 print(sub_config_frame)
-                traceback.print_exc()
+                if errors:
+                    traceback.print_exc()
 
     # Plot the archive profile
     size_values = all_profiles[compare_size].drop_duplicates().values
@@ -204,4 +209,5 @@ def plot_archive_profiles(
             )
         except Exception:
             print(f"\n!!!WARNING!!! Cannot plot {prefixe}archive_profiles for {env}.")
-            traceback.print_exc()
+            if errors:
+                traceback.print_exc()

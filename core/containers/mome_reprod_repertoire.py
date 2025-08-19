@@ -1,36 +1,360 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Callable, Tuple
 
 import jax
 import jax.numpy as jnp
-from qdax.core.containers.mapelites_repertoire import get_cells_indices
-from qdax.core.containers.mome_repertoire import MOMERepertoire
-from qdax.types import Centroid, Descriptor, ExtraScores, Fitness, Genotype
+from qdax.core.containers.mapelites_repertoire import (
+    MapElitesRepertoire,
+    get_cells_indices,
+)
+from qdax.custom_types import (
+    Centroid,
+    Descriptor,
+    ExtraScores,
+    Fitness,
+    Genotype,
+    Mask,
+    ParetoFront,
+    RNGKey,
+)
+from qdax.utils.pareto_front import compute_masked_pareto_front
 
 
-class MOMEReprodRepertoire(MOMERepertoire):
+class MOMEReprodRepertoire(MapElitesRepertoire):
+    """Class for the repertoire in Multi Objective Map Elites
 
-    """Class for the MOME Repertoire used for fitness-reproducibility trade-off problems."""
+    This class inherits from MAPElitesRepertoire. The stored data
+    is the same: genotypes, fitnesses, descriptors, centroids.
 
+    The shape of genotypes is (in the case where it's an array):
+    (num_centroids, pareto_front_length, genotype_dim).
+    When the genotypes is a PyTree, the two first dimensions are the same
+    but the third will depend on the leafs.
+
+    The shape of fitnesses is: (num_centroids, pareto_front_length, num_criteria)
+
+    The shape of descriptors and centroids are:
+    (num_centroids, num_descriptors, pareto_front_length).
+
+    Inherited functions: save and load.
+    """
+
+    @jax.jit
+    def _sample_in_masked_pareto_front(
+        self,
+        pareto_front_genotypes: ParetoFront[Genotype],
+        pareto_front_fitnesses: ParetoFront[Fitness],
+        pareto_front_descriptors: ParetoFront[Descriptor],
+        mask: Mask,
+        random_key: RNGKey,
+    ) -> Tuple[Genotype, Descriptor, Fitness]:
+        """Sample one single genotype in masked pareto front.
+
+        Note: do not retrieve a random key because this function
+        is to be vmapped. The public method that uses this function
+        will return a random key
+
+        Args:
+            pareto_front_genotypes: the genotypes of a pareto front
+            mask: a mask associated to the front
+            random_key: a random key to handle stochastic operations
+
+        Returns:
+            A single genotype among the pareto front.
+        """
+        print("\nUniform _sample_in_masked_pareto_front.\n")
+
+        p = (1.0 - mask) / jnp.sum(1.0 - mask)
+
+        genotype_sample = jax.tree_util.tree_map(
+            lambda x: jax.random.choice(random_key, x, shape=(1,), p=p),
+            pareto_front_genotypes,
+        )
+
+        fitnesses_sample = jax.random.choice(
+            random_key, pareto_front_fitnesses, shape=(1,), p=p
+        )
+        descriptors_sample = jax.random.choice(
+            random_key, pareto_front_descriptors, shape=(1,), p=p
+        )
+
+        return genotype_sample, descriptors_sample, fitnesses_sample
+
+    @partial(jax.jit, static_argnames=("num_samples",))
+    def sample(self, random_key: RNGKey, num_samples: int) -> Tuple[Genotype, RNGKey]:
+        """Sample elements in the repertoire.
+
+        This method sample a non-empty pareto front, and then sample
+        genotypes from this pareto front.
+
+        Args:
+            random_key: a random key to handle stochasticity.
+            num_samples: number of samples to retrieve from the repertoire.
+
+        Returns:
+            A sample of genotypes and a new random key.
+        """
+
+        # create sampling probability for the cells
+        repertoire_empty = jnp.any(self.fitnesses == -jnp.inf, axis=-1)
+        occupied_cells = jnp.any(~repertoire_empty, axis=-1)
+
+        p = occupied_cells / jnp.sum(occupied_cells)
+
+        # possible indices - num cells
+        indices = jnp.arange(start=0, stop=repertoire_empty.shape[0])
+
+        # choose idx - among indices of cells that are not empty
+        random_key, subkey = jax.random.split(random_key)
+        cells_idx = jax.random.choice(subkey, indices, shape=(num_samples,), p=p)
+
+        # get genotypes (front) from the chosen indices
+        pareto_front_genotypes = jax.tree_util.tree_map(
+            lambda x: x[cells_idx], self.genotypes
+        )
+
+        # prepare second sampling function
+        sample_in_fronts = jax.vmap(self._sample_in_masked_pareto_front)
+
+        # sample genotypes from the pareto front
+        random_key, subkey = jax.random.split(random_key)
+        subkeys = jax.random.split(subkey, num=num_samples)
+        sampled_genotypes, _, _, = sample_in_fronts(  # type: ignore
+            pareto_front_genotypes=pareto_front_genotypes,
+            pareto_front_fitnesses=self.fitnesses[cells_idx],
+            pareto_front_descriptors=self.descriptors[cells_idx],
+            mask=repertoire_empty[cells_idx],
+            random_key=subkeys,
+        )
+
+        # remove the dim coming from pareto front
+        sampled_genotypes = jax.tree_util.tree_map(
+            lambda x: x.squeeze(axis=1), sampled_genotypes
+        )
+
+        return sampled_genotypes, random_key
+
+    @partial(jax.jit, static_argnames=("num_samples",))
+    def sample_with_descs(
+        self, random_key: RNGKey, num_samples: int
+    ) -> Tuple[Genotype, Descriptor, RNGKey]:
+        """Sample elements in the repertoire.
+
+        This method sample a non-empty pareto front, and then sample
+        genotypes from this pareto front.
+
+        Args:
+            random_key: a random key to handle stochasticity.
+            num_samples: number of samples to retrieve from the repertoire.
+
+        Returns:
+            A sample of genotypes and a new random key.
+        """
+
+        # create sampling probability for the cells
+        repertoire_empty = jnp.any(self.fitnesses == -jnp.inf, axis=-1)
+        occupied_cells = jnp.any(~repertoire_empty, axis=-1)
+
+        p = occupied_cells / jnp.sum(occupied_cells)
+
+        # possible indices - num cells
+        indices = jnp.arange(start=0, stop=repertoire_empty.shape[0])
+
+        # choose idx - among indices of cells that are not empty
+        random_key, subkey = jax.random.split(random_key)
+        cells_idx = jax.random.choice(subkey, indices, shape=(num_samples,), p=p)
+
+        # get genotypes (front) from the chosen indices
+        pareto_front_genotypes = jax.tree_util.tree_map(
+            lambda x: x[cells_idx], self.genotypes
+        )
+
+        # prepare second sampling function
+        sample_in_fronts = jax.vmap(self._sample_in_masked_pareto_front)
+
+        # sample genotypes from the pareto front
+        random_key, subkey = jax.random.split(random_key)
+        subkeys = jax.random.split(subkey, num=num_samples)
+        sampled_genotypes, sampled_descriptors, sampled_fitnesses, = sample_in_fronts(  # type: ignore
+            pareto_front_genotypes=pareto_front_genotypes,
+            pareto_front_fitnesses=self.fitnesses[cells_idx],
+            pareto_front_descriptors=self.descriptors[cells_idx],
+            mask=repertoire_empty[cells_idx],
+            random_key=subkeys,
+        )
+
+        # remove the dim coming from pareto front
+        sampled_genotypes = jax.tree_util.tree_map(
+            lambda x: x.squeeze(axis=1), sampled_genotypes
+        )
+        sampled_fitnesses = jax.tree_util.tree_map(
+            lambda x: x.squeeze(axis=1), sampled_fitnesses
+        )
+        sampled_descriptors = jax.tree_util.tree_map(
+            lambda x: x.squeeze(axis=1), sampled_descriptors
+        )
+
+        return sampled_genotypes, sampled_descriptors, random_key
+
+    @jax.jit
+    def _update_masked_pareto_front(
+        self,
+        pareto_front_fitnesses: ParetoFront[Fitness],
+        pareto_front_genotypes: ParetoFront[Genotype],
+        pareto_front_descriptors: ParetoFront[Descriptor],
+        mask: Mask,
+        new_batch_of_fitnesses: Fitness,
+        new_batch_of_genotypes: Genotype,
+        new_batch_of_descriptors: Descriptor,
+        new_mask: Mask,
+    ) -> Tuple[
+        ParetoFront[Fitness], ParetoFront[Genotype], ParetoFront[Descriptor], Mask
+    ]:
+        """Takes a fixed size pareto front, its mask and new points to add.
+        Returns updated front and mask.
+
+        Args:
+            pareto_front_fitnesses: fitness of the pareto front
+            pareto_front_genotypes: corresponding genotypes
+            pareto_front_descriptors: corresponding descriptors
+            mask: mask of the front, to hide void parts
+            new_batch_of_fitnesses: new batch of fitness that is considered
+                to be added to the pareto front
+            new_batch_of_genotypes: corresponding genotypes
+            new_batch_of_descriptors: corresponding descriptors
+            new_mask: corresponding mask (no one is masked)
+
+        Returns:
+            The updated pareto front.
+        """
+        print("\nUniform _update_masked_pareto_front.\n")
+
+        # get dimensions
+        batch_size = new_batch_of_fitnesses.shape[0]
+        num_criteria = new_batch_of_fitnesses.shape[1]
+
+        pareto_front_len = pareto_front_fitnesses.shape[0]  # type: ignore
+        descriptors_dim = new_batch_of_descriptors.shape[1]
+
+        # gather all data
+        cat_mask = jnp.concatenate([mask, new_mask], axis=-1)
+        cat_fitnesses = jnp.concatenate(
+            [pareto_front_fitnesses, new_batch_of_fitnesses], axis=0
+        )
+        cat_genotypes = jax.tree_util.tree_map(
+            lambda x, y: jnp.concatenate([x, y], axis=0),
+            pareto_front_genotypes,
+            new_batch_of_genotypes,
+        )
+        cat_descriptors = jnp.concatenate(
+            [pareto_front_descriptors, new_batch_of_descriptors], axis=0
+        )
+
+        # get new front
+        cat_bool_front = compute_masked_pareto_front(
+            batch_of_criteria=cat_fitnesses, mask=cat_mask
+        )
+
+        # get corresponding indices
+        indices = (
+            jnp.arange(start=0, stop=pareto_front_len + batch_size) * cat_bool_front
+        )
+        indices = indices + ~cat_bool_front * (batch_size + pareto_front_len - 1)
+        indices = jnp.sort(indices)
+
+        # get new fitness, genotypes and descriptors
+        new_front_fitness = jnp.take(cat_fitnesses, indices, axis=0)
+        new_front_genotypes = jax.tree_util.tree_map(
+            lambda x: jnp.take(x, indices, axis=0), cat_genotypes
+        )
+        new_front_descriptors = jnp.take(cat_descriptors, indices, axis=0)
+
+        # compute new mask
+        num_front_elements = jnp.sum(cat_bool_front)
+        new_mask_indices = jnp.arange(start=0, stop=batch_size + pareto_front_len)
+        new_mask_indices = (num_front_elements - new_mask_indices) > 0
+
+        new_mask = jnp.where(
+            new_mask_indices,
+            jnp.ones(shape=batch_size + pareto_front_len, dtype=bool),
+            jnp.zeros(shape=batch_size + pareto_front_len, dtype=bool),
+        )
+
+        fitness_mask = jnp.repeat(
+            jnp.expand_dims(new_mask, axis=-1), num_criteria, axis=-1
+        )
+        new_front_fitness = new_front_fitness * fitness_mask
+
+        front_size = len(pareto_front_fitnesses)  # type: ignore
+        new_front_fitness = new_front_fitness[:front_size, :]
+
+        new_front_genotypes = jax.tree_util.tree_map(
+            lambda x: x
+            * jnp.reshape(new_mask, (new_mask.shape[0],) + (1,) * (len(x.shape) - 1)),
+            new_front_genotypes,
+        )
+        new_front_genotypes = jax.tree_util.tree_map(
+            lambda x: x[:front_size, :], new_front_genotypes
+        )
+
+        descriptors_mask = jnp.repeat(
+            jnp.expand_dims(new_mask, axis=-1), descriptors_dim, axis=-1
+        )
+        new_front_descriptors = new_front_descriptors * descriptors_mask
+        new_front_descriptors = new_front_descriptors[:front_size, :]
+
+        new_mask = ~new_mask[:front_size]
+
+        return new_front_fitness, new_front_genotypes, new_front_descriptors, new_mask
+
+    @partial(
+        jax.jit,
+        static_argnames=(
+            "fitness_extractor",
+            "fitness_reproducibility_extractor",
+            "descriptor_extractor",
+            "descriptor_reproducibility_extractor",
+        ),
+    )
     def add(
         self,
         batch_of_genotypes: Genotype,
-        batch_of_descriptors: Descriptor,
-        batch_of_fitnesses: Fitness,
+        batch_of_all_descriptors: Descriptor,
+        batch_of_all_fitnesses: Fitness,
         batch_of_extra_scores: ExtraScores,
         fitness_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         fitness_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
     ) -> MOMEReprodRepertoire:
+        """
+        Add a batch of elements to the repertoire.
+        WARNING: This addition makes the hypothesis that batch_of_all_descriptors
+        and batch_of_all_fitnesses are already dimensions num_evals.
 
-        batch_size, num_samples = batch_of_fitnesses.shape
+        Args:
+            batch_of_genotypes: a batch of genotypes to be added to the repertoire.
+                Similarly to the self.genotypes argument, this is a PyTree in which
+                the leaves have a shape (batch_size, num_features)
+            batch_of_descriptors: an array that contains the descriptors of the
+                aforementioned genotypes. Its shape is (batch_size, num_descriptors)
+            batch_of_fitnesses: an array that contains the fitnesses of the
+            batch_of_extra_scores: unused tree that contains the extra_scores of
+                aforementioned genotypes. Its shape is (batch_size,)
+
+        Returns:
+            The updated MAP-Elites repertoire.
+        """
+        print("\n add.\n")
+
+        batch_size, num_samples = batch_of_all_fitnesses.shape
 
         # Compute batch of reproducibility
         # WARNING: in the case of descriptors_reproducibility, take average over dimensions
         batch_of_reproducibilities = descriptor_reproducibility_extractor(
-            batch_of_descriptors
+            batch_of_all_descriptors
         )
         batch_of_reproducibilities = jnp.average(batch_of_reproducibilities, axis=-1)
 
@@ -41,11 +365,11 @@ class MOMEReprodRepertoire(MOMERepertoire):
         )
 
         # Compute batch of descriptor
-        batch_of_descriptors = descriptor_extractor(batch_of_descriptors)
+        batch_of_descriptors = descriptor_extractor(batch_of_all_descriptors)
 
         # Compute batch of fitness
         batch_of_fitnesses = jnp.expand_dims(
-            fitness_extractor(batch_of_fitnesses), axis=-1
+            fitness_extractor(batch_of_all_fitnesses), axis=-1
         )
 
         # Stack task fitness and reproducibility to get MOME fitness scores
@@ -58,9 +382,9 @@ class MOMEReprodRepertoire(MOMERepertoire):
         batch_of_indices = jnp.expand_dims(batch_of_indices, axis=-1)
 
         def _add_one(
-            carry: MOMERepertoire,
+            carry: MOMEReprodRepertoire,
             data: Tuple[Genotype, Descriptor, Fitness, jnp.ndarray],
-        ) -> Tuple[MOMERepertoire, Any]:
+        ) -> Tuple[MOMEReprodRepertoire, Any]:
             # unwrap data
             genotype, descriptors, fitness, index = data
 
@@ -129,7 +453,7 @@ class MOMEReprodRepertoire(MOMERepertoire):
             ),
         )
 
-        return new_repertoire
+        return new_repertoire  # type: ignore
 
     @classmethod
     def init(
@@ -145,10 +469,31 @@ class MOMEReprodRepertoire(MOMERepertoire):
         descriptor_reproducibility_extractor: Callable[[jnp.ndarray], jnp.ndarray],
         pareto_front_max_length: int,
     ) -> MOMEReprodRepertoire:
+        """
+        Initialize a Map-Elites repertoire with an initial population of genotypes.
+        Requires the definition of centroids that can be computed with any method
+        such as CVT or Euclidean mapping.
+
+        Note: this function has been kept outside of the object MapElites, so it can
+        be called easily called from other modules.
+
+        Args:
+            genotypes: initial genotypes, pytree in which leaves
+                have shape (batch_size, num_features)
+            fitnesses: fitness of the initial genotypes of shape (batch_size,)
+            descriptors: descriptors of the initial genotypes
+                of shape (batch_size, num_descriptors)
+            extra_scores: unused extra_scores of the initial genotypes
+            centroids: tesselation centroids of shape (batch_size, num_descriptors)
+            pareto_front_max_length
+
+        Returns:
+            an initialized MAP-Elite repertoire
+        """
 
         # get dimensions
         num_criteria = 2  # always fitness and reproducibility
-        num_descriptors = descriptors.shape[1]
+        num_descriptors = descriptors.shape[-1]
         num_centroids = centroids.shape[0]
 
         # create default values
@@ -180,8 +525,8 @@ class MOMEReprodRepertoire(MOMERepertoire):
         # add first batch of individuals in the repertoire
         new_repertoire = repertoire.add(
             batch_of_genotypes=genotypes,
-            batch_of_descriptors=descriptors,
-            batch_of_fitnesses=fitnesses,
+            batch_of_all_descriptors=descriptors,
+            batch_of_all_fitnesses=fitnesses,
             batch_of_extra_scores=extra_scores,
             fitness_extractor=fitness_extractor,
             fitness_reproducibility_extractor=fitness_reproducibility_extractor,
@@ -192,12 +537,53 @@ class MOMEReprodRepertoire(MOMERepertoire):
         return new_repertoire  # type: ignore
 
     @jax.jit
+    def added_repertoire(
+        self,
+        genotypes: Genotype,
+        descriptors: Descriptor,
+    ) -> jnp.ndarray:
+        """Compute if the given genotypes have been added to the repertoire in
+        corresponding cell.
+
+        Args:
+            genotypes: genotypes candidate to addition
+            descriptors: corresponding descriptors
+        Returns:
+            boolean for each genotype
+        """
+        num_genotypes = descriptors.shape[0]
+        pareto_size = jax.tree_util.tree_leaves(self.genotypes)[0].shape[1]
+        cells = get_cells_indices(descriptors, self.centroids)
+        repertoire_genotypes = jax.tree_util.tree_map(
+            lambda x: x[cells], self.genotypes
+        )
+        compare_genotypes = jax.tree_util.tree_map(
+            lambda x: jnp.repeat(
+                jnp.expand_dims(x, axis=1),
+                pareto_size,
+                axis=1,
+            ),
+            genotypes,
+        )
+        added = jax.tree_util.tree_map(
+            lambda x, y: jnp.equal(x, y), compare_genotypes, repertoire_genotypes
+        )
+        added = jax.tree_util.tree_map(
+            lambda x: jnp.reshape(x, (num_genotypes, pareto_size, -1)), added
+        )
+        added = jax.tree_util.tree_map(lambda x: jnp.all(x, axis=2), added)
+        added = jax.tree_util.tree_map(lambda x: jnp.any(x, axis=1), added)
+        final_added = jnp.array(jax.tree_util.tree_leaves(added))
+        final_added = jnp.all(final_added, axis=0)
+        return final_added
+
+    @jax.jit
     def empty(self) -> MOMEReprodRepertoire:
         """
         Empty the grid from all existing individuals.
 
         Returns:
-            An empty MapElitesReproducibilityRepertoire
+            An empty repertoire
         """
 
         new_fitnesses = jnp.full_like(self.fitnesses, -jnp.inf)

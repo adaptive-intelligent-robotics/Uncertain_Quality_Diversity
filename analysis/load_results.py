@@ -7,6 +7,41 @@ import jax.numpy as jnp
 import pandas as pd
 from natsort import natsort_keygen
 
+LOSSES = [
+    "qd_score",
+    "coverage",
+]
+
+# TODO: used to unformise old and new datas
+UNIFORMISE_FOLDER_NAMES = {
+    "env": "env_name",
+    "name": "run",
+    "repertoire_folder": "results_repertoire",
+    "projected_repertoire_folder": "results_projected_repertoire",
+    "target_repertoire_folder": "results_target_repertoire",
+    "reeval_repertoire_folder": "results_reeval_repertoire",
+    "average_repertoire_folder": "results_average_repertoire",
+    "fit_reeval_repertoire_folder": "results_fit_reeval_repertoire",
+    "fit_average_repertoire_folder": "results_fit_average_repertoire",
+    "desc_reeval_repertoire_folder": "results_desc_reeval_repertoire",
+    "desc_average_repertoire_folder": "results_desc_average_repertoire",
+    "fit_var_repertoire_folder": "results_fit_var_repertoire",
+    "desc_var_repertoire_folder": "results_desc_var_repertoire",
+    "additional_folder": "results_additional",
+    "reeval_additional_folder": "results_reeval_additional",
+    "in_cell_reeval_repertoire_folder": "results_in_cell_reeval_repertoire",
+    "in_cell_fit_reeval_repertoire_folder": "results_in_cell_fit_reeval_repertoire",
+    "in_cell_desc_reeval_repertoire_folder": "results_in_cell_desc_reeval_repertoire",
+    "in_cell_fit_var_repertoire_folder": "results_in_cell_fit_var_repertoire",
+    "in_cell_desc_var_repertoire_folder": "results_in_cell_desc_var_repertoire",
+    "reeval_fit_var_repertoire_folder": "results_reeval_fit_var_repertoire",
+    "reeval_desc_var_repertoire_folder": "results_reeval_desc_var_repertoire",
+    "in_cell_reeval_fit_var_repertoire_folder": "results_in_cell_reeval_fit_var_repertoire",
+    "in_cell_reeval_desc_var_repertoire_folder": "results_in_cell_reeval_desc_var_repertoire",
+    "in_cell_reeval_additional_repertoire_folder": "results_in_cell_reeval_additional_repertoire",
+    "in_cell_reeval_additional_repertoire": "results_in_cell_reeval_additional_repertoire",
+}
+
 
 def load_results(
     save_folder: str,
@@ -14,12 +49,15 @@ def load_results(
     plot_algos: List,
     exclude_algos: List,
     exclude_sizes: List,
+    always_name: List,
     not_name: List,
     replace_name: Dict,
     time_pourcent: float,
-    pourcent_value: bool,
     compare_size: str,
     order: List,
+    use_max_xaxis: bool,
+    env_max_xaxis: Dict,
+    x_column: str,
 ) -> Tuple:
     """Main function to aload all results."""
 
@@ -47,6 +85,51 @@ def load_results(
             config_file = os.path.join(folder, "config.csv")
             sub_config_frame = pd.read_csv(config_file, index_col=False)
             sub_config_frame["folder"] = folder
+
+            # TODO: uniformise old and new
+            for key in UNIFORMISE_FOLDER_NAMES.keys():
+                if UNIFORMISE_FOLDER_NAMES[key] in sub_config_frame.columns:
+                    sub_config_frame[key] = sub_config_frame[
+                        UNIFORMISE_FOLDER_NAMES[key]
+                    ]
+
+            # TODO: env naming uniformisation
+            if any(
+                sub_config_frame["env"] == "arm_gaussian_fit0.01_desc0.01_params0.0"
+            ):
+                sub_config_frame["env"] = "arm_fit0.01_desc0.01_params0"
+            if any(
+                sub_config_frame["env"]
+                == "arm_gaussian_desc_bi_variance_fit0.01_desc0.1_params0.0"
+            ):
+                sub_config_frame[
+                    "env"
+                ] = "arm_gaussian_desc_bi_variance_fit0.01_desc0.1_params0"
+            if any(
+                sub_config_frame["env"]
+                == "direct_mapping_deceptive_0.1_fit0_desc0.1_params0"
+            ):
+                sub_config_frame["env"] = "direct_mapping_deceptive_0.1_nonoise"
+            if any(
+                sub_config_frame["env"]
+                == "direct_mapping_perfect_trade_off_0.02_fit0_desc0.2_params0"
+            ):
+                sub_config_frame[
+                    "env"
+                ] = "direct_mapping_perfect_trade_off_0.02_nonoise"
+            if any(
+                sub_config_frame["env"]
+                == "direct_mapping_sharp_peak_bigger_0.2_fit0_desc0.05_params0"
+            ):
+                sub_config_frame["env"] = "direct_mapping_sharp_peak_bigger_0.2_nonoise"
+            if any(
+                sub_config_frame["env"]
+                == "direct_mapping_sharp_peak_smaller_0.02_fit0_desc0.05_params0"
+            ):
+                sub_config_frame[
+                    "env"
+                ] = "direct_mapping_sharp_peak_smaller_0.02_nonoise"
+
             config_frame = pd.concat(
                 [config_frame, sub_config_frame], ignore_index=True
             )
@@ -56,30 +139,42 @@ def load_results(
 
         # Name algorithms
         print("\nSetting up algorithms names")
-        use_in_name = []
-        for column in config_frame.columns:
-            if column not in not_name:
-                if (config_frame[column] != config_frame[column][0]).any():
-                    use_in_name.append(column)
+        use_in_name: Dict = {}
+        for name_algo in config_frame["name"].drop_duplicates().values:
+            sub_config_frame = config_frame[config_frame["name"] == name_algo]
+            use_in_name[name_algo] = []
+            for column in sub_config_frame.columns:
+                if column in always_name:
+                    use_in_name[name_algo].append(column)
+                elif column not in not_name:
+                    all_values = sub_config_frame[column]
+                    all_values = all_values[all_values == all_values]  # remove NaN
+                    if not all_values.empty and all_values.nunique() > 1:
+                        use_in_name[name_algo].append(column)
         print("\n    Differences between runs:", use_in_name)
 
         # Add algo name to each line
+        no_replace_algos = []
         algos = []
         algos_batch = []
         for line in range(config_frame.shape[0]):
-            algo = config_frame["run"][line]
+            algo = config_frame["name"][line]
 
-            if "Deep-Grid" in algo and "sampling" in algo:
-                algo = algo.replace("Deep-Grid", "Deep-Grid-sampling")
+            for name in use_in_name[config_frame["name"][line]]:
+                if config_frame[name][line] == config_frame[name][line]:
+                    algo += " " + name + ":" + str(config_frame[name][line])
+            if algo not in no_replace_algos:
+                no_replace_algos.append(algo)
 
             for name in replace_name.keys():
                 algo = algo.replace(name, replace_name[name])
 
-            for name in use_in_name:
-                algo += " " + name + ":" + str(config_frame[name][line])
             algo_batch = algo + " - " + str(config_frame[compare_size][line])
             algos.append(algo)
             algos_batch.append(algo_batch)
+
+        print("    Names before replace:")
+        print(no_replace_algos)
 
         config_frame["algo"] = algos
         config_frame["algo_batch"] = algos_batch
@@ -89,6 +184,7 @@ def load_results(
         config_frame.to_csv(file_name, index=None)
 
     print("    Found", config_frame.shape[0], "runs, with algo names:")
+    print(config_frame["name"].drop_duplicates().reset_index(drop=True))
     print(config_frame["algo"].drop_duplicates().reset_index(drop=True))
 
     ########################
@@ -96,10 +192,10 @@ def load_results(
 
     # Filter algos that does not need to be ploted
     if plot_algos != [""]:
-        config_frame = config_frame[config_frame["run"].isin(plot_algos)]
+        config_frame = config_frame[config_frame["algo"].isin(plot_algos)]
     if exclude_algos != [""]:
         config_frame = config_frame[
-            ~config_frame["run"].str.contains("|".join(exclude_algos))
+            ~config_frame["algo"].str.contains("|".join(exclude_algos))
         ]
     if exclude_sizes != []:
         config_frame = config_frame[~(config_frame[compare_size].isin(exclude_sizes))]
@@ -119,41 +215,43 @@ def load_results(
     #####################################
     # 3. Try to load already saved data #
 
-    file_name_data = f"{plot_folder}_csv/all_data.csv"
-    file_name_losses = f"{plot_folder}_csv/all_losses.csv"
+    file_name_convergence = f"{plot_folder}_csv/all_convergence.csv"
+    file_name_finals = f"{plot_folder}_csv/all_finals.csv"
     file_name_times = f"{plot_folder}_csv/all_times.csv"
     file_name_var = f"{plot_folder}_csv/all_var.csv"
     if (
-        os.path.exists(file_name_data)
-        and os.path.exists(file_name_losses)
+        os.path.exists(file_name_convergence)
+        and os.path.exists(file_name_finals)
         and os.path.exists(file_name_times)
         and os.path.exists(file_name_var)
     ):
         print("\nLoading existing progress and loss datas in:")
-        print(file_name_data)
-        print(file_name_losses)
+        print(file_name_convergence)
+        print(file_name_finals)
         print(file_name_times)
         print(file_name_var)
-        all_data = pd.read_csv(file_name_data, header=0, index_col=False)
-        all_losses = pd.read_csv(file_name_losses, header=0, index_col=False)
+        all_convergence = pd.read_csv(file_name_convergence, header=0, index_col=False)
+        all_finals = pd.read_csv(file_name_finals, header=0, index_col=False)
         all_times = pd.read_csv(file_name_times, header=0, index_col=False)
         all_var = pd.read_csv(file_name_var, header=0, index_col=False)
 
         # Re-order
-        all_data = sort_data(all_data, ["algo", "rep", "eval"], order)
-        all_losses = sort_data(all_losses, ["algo", "rep", compare_size], order)
+        all_convergence = sort_data(all_convergence, ["algo", "rep", "eval"], order)
+        all_finals = sort_data(all_finals, ["algo", "rep", compare_size], order)
         all_times = sort_data(all_times, ["algo", "rep", compare_size], order)
         all_var = sort_data(all_var, ["algo", "rep", compare_size], order)
 
-        return config_frame, all_data, all_losses, all_times, all_var
+        return config_frame, all_convergence, all_finals, all_times, all_var
 
     #######################################
-    # 4. Fill in max_gen and replications #
+    # 4. Fill in max_x and replications #
 
     print("\nReading max gen and replications")
     start_t = time.time()
 
-    max_gen_frame = pd.DataFrame(columns=["env", "epoch"])
+    if use_max_xaxis:
+        print("\n\n!!!WARNING!!! Using max xaxis!")
+        max_x_frame = pd.DataFrame(columns=["env", x_column])
     replications_frame = pd.DataFrame(
         columns=["env", "num_reevals", "algo", compare_size, "num_rep"]
     )
@@ -179,48 +277,67 @@ def load_results(
                         ignore_index=True,
                     )
 
-    # Go through all metrics files to fill max_gen_frame and replications_frame
-    seeds = []
+    # Go through all metrics files to fill max_x_frame and replications_frame
+    seeds: Dict = {}
     for line in range(config_frame.shape[0]):
         try:
             # Get the config for this line
             env = config_frame["env"][line]
-            num_reevals = config_frame["num_reevals"][line]  # 0
+            num_reevals = config_frame["num_reevals"][line]
             size = config_frame[compare_size][line]
+            name = config_frame["name"][line]
             algo = config_frame["algo"][line]
+            seed = config_frame["seed"][line]
 
-            if config_frame["seed"][line] in seeds:
-                print("twice seed:", config_frame["seed"][line])
-            seeds.append(config_frame["seed"][line])
+            if seed in seeds.keys():
+                if seeds[seed][0] == env and seeds[seed][1] == name:
+                    if seeds[seed][2] == size:
+                        print(f"Twice seed for {env}, {name} and {size}.")
+                    else:
+                        print(f"Twice seed for {env} and {name}.")
+                        print(f"Size are {seeds[seed][2]} and {size} respectively.")
+            seeds[seed] = [env, name, size]
 
-            # Open data to compute maximum number of generations
-            folder = config_frame["folder"][line]
-            metrics_file = config_frame["metrics_file"][line]
-            in_cell_metrics_file = config_frame["in_cell_metrics_file"][line]
-            metrics_file = metrics_file[metrics_file.rfind("/") + 1 :]
-            in_cell_metrics_file = in_cell_metrics_file[
-                in_cell_metrics_file.rfind("/") + 1 :
-            ]
-            metrics_file = os.path.join(folder, metrics_file)
-            in_cell_metrics_file = os.path.join(folder, in_cell_metrics_file)
-            data = pd.read_csv(metrics_file, index_col=False)
+            if use_max_xaxis:
 
-            # Add maximum number of generations to frame
-            if env in max_gen_frame["env"].values:
-                max_gen = min(
-                    data["epoch"].max(),
-                    max_gen_frame[max_gen_frame["env"] == env]["epoch"].values[0],
-                )
-                max_gen_frame.loc[max_gen_frame["env"] == env, "epoch"] = max_gen
-            else:
-                max_gen = data["epoch"].max()
-                max_gen_frame = pd.concat(
-                    [
-                        max_gen_frame,
-                        pd.DataFrame.from_dict({"env": [env], "epoch": [max_gen]}),
-                    ],
-                    ignore_index=True,
-                )
+                # Open data to compute maximum number of generations
+                folder = config_frame["folder"][line]
+                metrics_file = config_frame["metrics_file"][line]
+                in_cell_metrics_file = config_frame["in_cell_metrics_file"][line]
+                metrics_file = metrics_file[metrics_file.rfind("/") + 1 :]
+                in_cell_metrics_file = in_cell_metrics_file[
+                    in_cell_metrics_file.rfind("/") + 1 :
+                ]
+                metrics_file = os.path.join(folder, metrics_file)
+                in_cell_metrics_file = os.path.join(folder, in_cell_metrics_file)
+                data = pd.read_csv(metrics_file, index_col=False)
+
+                if env in env_max_xaxis.keys():
+                    # Get from input dict
+                    max_epoch = env_max_xaxis[env]
+                    sub_data = data[data["epoch"] <= max_epoch]
+                    max_x = sub_data[x_column].max()
+                    # print(f"    For {env}, from input dict: {max_x}.")
+                else:
+                    # Get max
+                    max_x = data[x_column].max()
+                    # print(f"    For {env}, from loading data: {max_x}.")
+
+                # Add maximum number of generations to frame
+                if env in max_x_frame["env"].values:
+                    max_x = min(
+                        max_x,
+                        max_x_frame[max_x_frame["env"] == env][x_column].values[0],
+                    )
+                    max_x_frame.loc[max_x_frame["env"] == env, x_column] = max_x
+                else:
+                    max_x_frame = pd.concat(
+                        [
+                            max_x_frame,
+                            pd.DataFrame.from_dict({"env": [env], x_column: [max_x]}),
+                        ],
+                        ignore_index=True,
+                    )
 
             # Add replication to frame
             replications_frame.loc[
@@ -236,16 +353,16 @@ def load_results(
             print(config_frame.loc[line])
             traceback.print_exc()
 
-    print("\nMax epoch for each environment:")
-    print(max_gen_frame)
-    print("\n")
+    if use_max_xaxis:
+        print(f"\nMax {x_column} for each environment:")
+        print(max_x_frame)
+        print("\n")
 
     # Remove empty replications from replications_frame
     replications_frame = replications_frame[replications_frame["num_rep"] != 0]
-    replications_frame = replications_frame.sort_values(
-        ["env", "num_reevals"], ignore_index=True
+    replications_frame = sort_data(
+        replications_frame, ["env", "num_reevals", "algo", compare_size], order
     )
-    replications_frame = sort_data(replications_frame, ["algo", compare_size], order)
 
     # Save replications frame as csv
     print("\nReplications:")
@@ -257,7 +374,7 @@ def load_results(
         sep=",",
     )
 
-    print("Time to read replications and max_gen_frame:", time.time() - start_t)
+    print("Time to read replications and max_x_frame:", time.time() - start_t)
 
     ################
     # 5. Load data #
@@ -265,36 +382,10 @@ def load_results(
     print("\nReading data")
 
     # Create the metrics dataframe
-    all_data = pd.DataFrame()
-    all_losses = pd.DataFrame()
+    all_convergence = pd.DataFrame()
+    all_finals = pd.DataFrame()
     all_times = pd.DataFrame()
     all_var = pd.DataFrame()
-
-    # Function to add config info to a frame
-    def add_config(
-        frame: pd.DataFrame,
-        run: List,
-        algo: List,
-        algo_batch: List,
-        num_centroids: List,
-        env: List,
-        num_reevals: List,
-        size: List,
-        sampling_size: List,
-        batch_size: List,
-        rep: List,
-    ) -> pd.DataFrame:
-        frame["run"] = run
-        frame["algo"] = algo
-        frame["algo_batch"] = algo_batch
-        frame["num_centroids"] = num_centroids
-        frame["env"] = env
-        frame["num_reevals"] = num_reevals
-        frame[compare_size] = size
-        frame["batch_size"] = batch_size
-        frame["sampling_size"] = sampling_size
-        frame["rep"] = rep
-        return frame
 
     # Go through all metrics files
     start_t = time.time()
@@ -302,8 +393,8 @@ def load_results(
     for line in range(config_frame.shape[0]):
 
         try:
-            # Get the config for this line
-            run = config_frame["run"][line]
+            # First, get the config for this line
+            name = config_frame["name"][line]
             algo = config_frame["algo"][line]
             algo_batch = config_frame["algo_batch"][line]
             env = config_frame["env"][line]
@@ -323,156 +414,273 @@ def load_results(
             metrics_file = os.path.join(folder, metrics_file)
             in_cell_metrics_file = os.path.join(folder, in_cell_metrics_file)
 
-            # Read metrics
+            # Second, read metrics
             data = pd.read_csv(metrics_file, index_col=False)
             if data.empty:
                 print(f"!!!WARNING!!! {metrics_file} is empty.")
                 continue
 
-            # Read in-cell metrics
+            # Third, read in-cell metrics
             in_cell_data = pd.read_csv(in_cell_metrics_file, index_col=False)
 
-            # Merge metrics and in-cell metrics in the same frame
-            to_merge = [  # [Name in data, Name in in_cell_data]
-                ["in_cell_qd_score", "in_cell_qd_score"],
-                ["in_cell_coverage", "in_cell_coverage"],
-                ["in_cell_max_fitness", "in_cell_max_fitness"],
-                ["in_cell_reeval_qd_score", "in_cell_reeval_qd_score"],
-                ["in_cell_reeval_coverage", "in_cell_reeval_coverage"],
-                ["in_cell_reeval_max_fitness", "in_cell_reeval_max_fitness"],
-                ["in_cell_fit_reeval_qd_score", "in_cell_fit_reeval_qd_score"],
-                ["in_cell_fit_reeval_coverage", "in_cell_fit_reeval_coverage"],
-                ["in_cell_fit_reeval_max_fitness", "in_cell_fit_reeval_max_fitness"],
-                ["in_cell_desc_reeval_qd_score", "in_cell_desc_reeval_qd_score"],
-                ["in_cell_desc_reeval_coverage", "in_cell_desc_reeval_coverage"],
-                ["in_cell_desc_reeval_max_fitness", "in_cell_desc_reeval_max_fitness"],
-                ["in_cell_fit_var_qd_score", "in_cell_fit_var_qd_score"],
-                ["in_cell_fit_var_coverage", "in_cell_fit_var_coverage"],
-                ["in_cell_fit_var_max_fitness", "in_cell_fit_var_max_fitness"],
-                ["in_cell_desc_var_qd_score", "in_cell_desc_var_qd_score"],
-                ["in_cell_desc_var_coverage", "in_cell_desc_var_coverage"],
-                ["in_cell_desc_var_max_fitness", "in_cell_desc_var_max_fitness"],
-                [
-                    "in_cell_reeval_additional_qd_score",
-                    "in_cell_reeval_additional_qd_score",
-                ],
-                [
-                    "in_cell_reeval_additional_max_fitness",
-                    "in_cell_reeval_additional_max_fitness",
-                ],
-                [
-                    "in_cell_reeval_additional_min_fitness",
-                    "in_cell_reeval_additional_min_fitness",
-                ],
-            ]
-            for column_to_merge in to_merge:
-                if column_to_merge[0] in in_cell_data.columns:
-                    data[column_to_merge[0]] = in_cell_data[column_to_merge[1]]
+            # TODO: Old data
+            if "in_cell_qd_score" in in_cell_data.columns:
+                # Merge metrics and in-cell metrics in the same frame
+                to_merge = [  # [Name in data, Name in in_cell_data]
+                    ["in_cell_qd_score", "in_cell_qd_score"],
+                    ["in_cell_coverage", "in_cell_coverage"],
+                    ["in_cell_max_fitness", "in_cell_max_fitness"],
+                    ["in_cell_reeval_qd_score", "in_cell_reeval_qd_score"],
+                    ["in_cell_reeval_coverage", "in_cell_reeval_coverage"],
+                    ["in_cell_reeval_max_fitness", "in_cell_reeval_max_fitness"],
+                    ["in_cell_fit_reeval_qd_score", "in_cell_fit_reeval_qd_score"],
+                    ["in_cell_fit_reeval_coverage", "in_cell_fit_reeval_coverage"],
+                    [
+                        "in_cell_fit_reeval_max_fitness",
+                        "in_cell_fit_reeval_max_fitness",
+                    ],
+                    ["in_cell_desc_reeval_qd_score", "in_cell_desc_reeval_qd_score"],
+                    ["in_cell_desc_reeval_coverage", "in_cell_desc_reeval_coverage"],
+                    [
+                        "in_cell_desc_reeval_max_fitness",
+                        "in_cell_desc_reeval_max_fitness",
+                    ],
+                    ["in_cell_fit_var_qd_score", "in_cell_fit_var_qd_score"],
+                    ["in_cell_fit_var_coverage", "in_cell_fit_var_coverage"],
+                    ["in_cell_fit_var_max_fitness", "in_cell_fit_var_max_fitness"],
+                    ["in_cell_desc_var_qd_score", "in_cell_desc_var_qd_score"],
+                    ["in_cell_desc_var_coverage", "in_cell_desc_var_coverage"],
+                    ["in_cell_desc_var_max_fitness", "in_cell_desc_var_max_fitness"],
+                    [
+                        "in_cell_reeval_additional_qd_score",
+                        "in_cell_reeval_additional_qd_score",
+                    ],
+                    [
+                        "in_cell_reeval_additional_max_fitness",
+                        "in_cell_reeval_additional_max_fitness",
+                    ],
+                    [
+                        "in_cell_reeval_additional_min_fitness",
+                        "in_cell_reeval_additional_min_fitness",
+                    ],
+                ]
+                for column_to_merge in to_merge:
+                    if column_to_merge[1] in in_cell_data.columns:
+                        data[column_to_merge[0]] = in_cell_data[column_to_merge[1]]
 
-            # Filter datas after max_gen
-            data = data[
-                data["epoch"]
-                <= max_gen_frame[max_gen_frame["env"] == env]["epoch"].values[0]
-            ]
+            # TODO: New data
+            else:
+                to_merge = [  # [Name in data, Name in in_cell_data]
+                    ["in_cell_qd_score", "qd_score"],
+                    ["in_cell_coverage", "coverage"],
+                    ["in_cell_max_fitness", "max_fitness"],
+                    ["in_cell_reeval_qd_score", "reeval_qd_score"],
+                    ["in_cell_reeval_coverage", "reeval_coverage"],
+                    ["in_cell_reeval_max_fitness", "reeval_max_fitness"],
+                    ["in_cell_fit_reeval_qd_score", "fit_reeval_qd_score"],
+                    ["in_cell_fit_reeval_coverage", "fit_reeval_coverage"],
+                    ["in_cell_fit_reeval_max_fitness", "fit_reeval_max_fitness"],
+                    ["in_cell_desc_reeval_qd_score", "desc_reeval_qd_score"],
+                    ["in_cell_desc_reeval_coverage", "desc_reeval_coverage"],
+                    ["in_cell_desc_reeval_max_fitness", "desc_reeval_max_fitness"],
+                    ["in_cell_fit_var_qd_score", "fit_var_qd_score"],
+                    ["in_cell_fit_var_coverage", "fit_var_coverage"],
+                    ["in_cell_fit_var_max_fitness", "fit_var_max_fitness"],
+                    ["in_cell_desc_var_qd_score", "desc_var_qd_score"],
+                    ["in_cell_desc_var_coverage", "desc_var_coverage"],
+                    ["in_cell_desc_var_max_fitness", "desc_var_max_fitness"],
+                    [
+                        "in_cell_reeval_additional_qd_score",
+                        "reeval_additional_qd_score",
+                    ],
+                    [
+                        "in_cell_reeval_additional_max_fitness",
+                        "reeval_additional_max_fitness",
+                    ],
+                    [
+                        "in_cell_reeval_additional_min_fitness",
+                        "reeval_additional_min_fitness",
+                    ],
+                ]
+                for column_to_merge in to_merge:
+                    if column_to_merge[1] in in_cell_data.columns:
+                        data[column_to_merge[0]] = in_cell_data[column_to_merge[1]]
 
-            # Add run info to frame
-            data = add_config(
-                frame=data,
-                run=run,
-                algo=algo,
-                algo_batch=algo_batch,
-                num_centroids=num_centroids,
-                env=env,
-                num_reevals=num_reevals,
-                size=size,
-                sampling_size=sampling_size,
-                batch_size=batch_size,
-                rep=rep,
-            )
+            # TODO: Old data
+            # Fourth, add timestep to dataframe
+            if "timestep" not in data.columns:
+                data["timestep"] = data["epoch"] * batch_size
+                if "PartialEval" in name:
+                    print("!!!WARNING!!! Timesteps not in metrics, infering it.")
+                    fixed_length_idx = name.find("-length")
+                    fixed_length_end_idx = name.find("-smpl")
+                    fixed_length = int(
+                        name[fixed_length_idx + 7 : fixed_length_end_idx]
+                    )
+                    print(
+                        f"Building timestep for PartialEval with fixed length {fixed_length}."
+                    )
+                    data["timestep"] = data["timestep"] * fixed_length
+                else:
+                    data["timestep"] = (
+                        data["timestep"] * config_frame["episode_length"][line]
+                    )
 
-            # Compute losses
-            losses: Dict[str, List[float]] = {}
-            losses = compute_loss("qd_score", data, losses)
-            losses = compute_loss("coverage", data, losses)
-            losses = compute_loss("max_fitness", data, losses)
-            losses = compute_loss("qd_score", data, losses, prefixe="in_cell_")
-            losses = compute_loss("coverage", data, losses, prefixe="in_cell_")
-            losses = compute_loss("max_fitness", data, losses, prefixe="in_cell_")
+            # Fifth, filter datas after max_x if required
+            if use_max_xaxis:
+                data = data[
+                    data[x_column]
+                    <= max_x_frame[max_x_frame["env"] == env][x_column].values[0]
+                ]
 
-            # Compute times to % convergence
-            times: Dict[str, List[float]] = {}
-            times = compute_time(
-                data,
-                env,
-                algo,
-                size,
-                times,
-                pourcent=time_pourcent,
-                pourcent_value=pourcent_value,
-            )
-            times = compute_time(
-                data,
-                env,
-                algo,
-                size,
-                times,
-                pourcent=time_pourcent,
-                prefixe="in_cell_",
-                pourcent_value=pourcent_value,
-            )
+            # Anyway print if shorter than should be
+            if env in env_max_xaxis:
+                max_x_column = max(data[x_column])
+                if max_x_column < env_max_xaxis[env]:
+                    print(
+                        f"!!!TOCHECK!!! Incomplete run for {algo} and {env} in {folder}, got {max_x_column}."
+                    )
+            else:
+                print(
+                    f"!!!WARNING!!! Env {env} not in env_max_xaxis, cannot check if all runs finished."
+                )
 
-            # Compute final variance
+            # Sixth, compute frame with all final values and losses
+            finals: Dict[str, List[float]] = {}
+            max_eval = max(data["eval"])
+            sub_data = data[data["eval"] == max_eval]
+
+            for column in sub_data.columns:
+                # Add all final values
+                finals[column] = sub_data[column].values[0]
+
+            # TODO: condition for old
+            if f"additional_qd_score" in sub_data.columns:
+                for corrected_name in ["", "reeval_"]:
+                    # Add all average additional
+                    coverage = sub_data[f"{corrected_name}coverage"].values[0]
+                    additional = sub_data[
+                        f"{corrected_name}additional_qd_score"
+                    ].values[0]
+                    if coverage != 0:
+                        finals[f"{corrected_name}additional_average"] = additional / (
+                            num_centroids * coverage / 100
+                        )
+
+            for prefixe in ["", "in_cell_"]:
+                for column in LOSSES:
+                    # Add all losses
+                    illusory = sub_data[f"{prefixe}{column}"].values[0]
+                    corrected = sub_data[f"{prefixe}reeval_{column}"].values[0]
+                    if illusory == 0.0 or illusory == -jnp.inf:
+                        finals[f"loss_{prefixe}{column}"] = (
+                            [0.0] if corrected == 0.0 else [100.0]
+                        )
+                    else:
+                        finals[f"loss_{prefixe}{column}"] = [
+                            (illusory - corrected) / illusory * 100
+                        ]
+
+            # Seventh, compute frame with all vars
             var: Dict[str, List[float]] = {}
-            var = compute_var(data, var, num_centroids)
-            var = compute_var(data, var, num_centroids, prefixe="in_cell_")
+            for prefixe in ["", "in_cell_"]:
+                for column in ["fit_var", "desc_var"]:
+                    # Add all qd-score and average var
+                    coverage = sub_data[f"{prefixe}coverage"].values[0]
+                    var_value = sub_data[f"{prefixe}{column}_qd_score"].values[0]
+                    if coverage == 0:
+                        var[f"{prefixe}{column}_avg"] = [0.0]
+                    else:
+                        var[f"{prefixe}{column}_avg"] = var_value / (
+                            coverage / 100 * num_centroids
+                        )
+                    var[f"{prefixe}{column}_qd_score"] = var_value
 
-            # Add run info to frame
-            losses = add_config(
-                frame=losses,
-                run=[run],
-                algo=[algo],
-                algo_batch=[algo_batch],
-                num_centroids=[num_centroids],
-                env=[env],
-                num_reevals=[num_reevals],
-                size=[size],
-                sampling_size=[sampling_size],
-                batch_size=[batch_size],
-                rep=[rep],
-            )
-            times = add_config(
-                frame=times,
-                run=[run],
-                algo=[algo],
-                algo_batch=[algo_batch],
-                num_centroids=[num_centroids],
-                env=[env],
-                num_reevals=[num_reevals],
-                size=[size],
-                sampling_size=[sampling_size],
-                batch_size=[batch_size],
-                rep=[rep],
-            )
-            var = add_config(
-                frame=var,
-                run=[run],
-                algo=[algo],
-                algo_batch=[algo_batch],
-                num_centroids=[num_centroids],
-                env=[env],
-                num_reevals=[num_reevals],
-                size=[size],
-                sampling_size=[sampling_size],
-                batch_size=[batch_size],
-                rep=[rep],
-            )
-            losses = pd.DataFrame.from_dict(losses)
+            # Eighth, compute frame with times to % convergence
+            times: Dict[str, List[float]] = {}
+
+            for prefixe in ["", "in_cell_"]:
+                # Add times to reach time_pourcent % of final value
+                if time_pourcent == 1:
+                    pourcent_epoch = max(data["epoch"].values)
+                else:
+                    final_value = sub_data[f"{prefixe}qd_score"].values[0]
+                    if final_value > 0:
+                        pourcent_value = time_pourcent * final_value
+                    else:
+                        pourcent_value = 2.0 - time_pourcent * final_value
+                    min_epoch = data["epoch"].drop_duplicates().nsmallest(2).iloc[-1]
+                    pourcent_epoch = min_epoch
+                    pourcent_epoch_candidates = data[
+                        data[f"{prefixe}qd_score"] < pourcent_value
+                    ]["epoch"]
+                    if not (pourcent_epoch_candidates.empty):
+                        pourcent_epoch = max(
+                            min_epoch, max(pourcent_epoch_candidates.values)
+                        )
+                    else:
+                        print(f"Taking min epoch for {name}.")
+
+                pourcent_line = data[data["epoch"] == pourcent_epoch]
+                times[f"{prefixe}epoch"] = pourcent_epoch
+                times[f"{prefixe}eval"] = pourcent_line["eval"].values[0]
+                times[f"{prefixe}time"] = pourcent_line["time"].values[0]
+                times[f"{prefixe}timestep"] = pourcent_line["timestep"].values[0]
+                times[f"{prefixe}reeval_qd_score"] = pourcent_line[
+                    f"{prefixe}reeval_qd_score"
+                ].values[0]
+
+            # Ninth, merge everything in main dataframes
+            data["name"] = name
+            data["algo"] = algo
+            data["algo_batch"] = algo_batch
+            data["num_centroids"] = num_centroids
+            data["env"] = env
+            data["num_reevals"] = num_reevals
+            data[compare_size] = size
+            data["batch_size"] = batch_size
+            data["sampling_size"] = sampling_size
+            data["rep"] = rep
+
+            finals["name"] = [name]
+            finals["algo"] = [algo]
+            finals["algo_batch"] = [algo_batch]
+            finals["num_centroids"] = [num_centroids]
+            finals["env"] = [env]
+            finals["num_reevals"] = [num_reevals]
+            finals[compare_size] = [size]
+            finals["batch_size"] = [batch_size]
+            finals["sampling_size"] = [sampling_size]
+            finals["rep"] = [rep]
+
+            times["name"] = [name]
+            times["algo"] = [algo]
+            times["algo_batch"] = [algo_batch]
+            times["num_centroids"] = [num_centroids]
+            times["env"] = [env]
+            times["num_reevals"] = [num_reevals]
+            times[compare_size] = [size]
+            times["batch_size"] = [batch_size]
+            times["sampling_size"] = [sampling_size]
+            times["rep"] = [rep]
+
+            var["name"] = [name]
+            var["algo"] = [algo]
+            var["algo_batch"] = [algo_batch]
+            var["num_centroids"] = [num_centroids]
+            var["env"] = [env]
+            var["num_reevals"] = [num_reevals]
+            var[compare_size] = [size]
+            var["batch_size"] = [batch_size]
+            var["sampling_size"] = [sampling_size]
+            var["rep"] = [rep]
+
+            finals = pd.DataFrame.from_dict(finals)
             times = pd.DataFrame.from_dict(times)
             var = pd.DataFrame.from_dict(var)
 
-            # Concatenate all frames to existing ones
-            all_data = pd.concat([all_data, data], ignore_index=True)
-            all_losses = pd.concat([all_losses, losses], ignore_index=True)
+            all_convergence = pd.concat([all_convergence, data], ignore_index=True)
+            all_finals = pd.concat([all_finals, finals], ignore_index=True)
             all_times = pd.concat([all_times, times], ignore_index=True)
             all_var = pd.concat([all_var, var], ignore_index=True)
 
@@ -503,57 +711,84 @@ def load_results(
     start_t = time.time()
 
     # Compute complement to additional for all env
-    if len(all_times["env"].drop_duplicates().values) > 1:
-        all_times["normalised_additional_average"] = all_times.groupby(
-            "env", group_keys=False
-        ).apply(
-            lambda g: (g["additional_average"] - g["additional_average"].min())
-            / (g["additional_average"].max() - g["additional_average"].min())
-        )
-        all_times["normalised_reeval_additional_average"] = all_times.groupby(
-            "env", group_keys=False
-        ).apply(
-            lambda g: (
-                g["reeval_additional_average"] - g["reeval_additional_average"].min()
+    if "additional_average" in all_finals.columns:
+        if len(all_finals["env"].drop_duplicates().values) > 1:
+
+            # Average
+            all_finals["normalised_additional_average"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(
+                lambda g: (g["additional_average"] - g["additional_average"].min())
+                / (g["additional_average"].max() - g["additional_average"].min())
             )
-            / (
-                g["reeval_additional_average"].max()
-                - g["reeval_additional_average"].min()
+            all_finals["complement_additional_average"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(lambda g: 1 - g["normalised_additional_average"])
+            all_finals["additional_reproducibility_score"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(lambda g: g["coverage"] * g["complement_additional_average"])
+
+            # Reeval Average
+            all_finals["normalised_reeval_additional_average"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(
+                lambda g: (
+                    g["reeval_additional_average"]
+                    - g["reeval_additional_average"].min()
+                )
+                / (
+                    g["reeval_additional_average"].max()
+                    - g["reeval_additional_average"].min()
+                )
             )
-        )
-        all_times["complement_additional_average"] = all_times.groupby(
-            "env", group_keys=False
-        ).apply(lambda g: 1 - g["normalised_additional_average"])
-        all_times["complement_reeval_additional_average"] = all_times.groupby(
-            "env", group_keys=False
-        ).apply(lambda g: 1 - g["normalised_reeval_additional_average"])
-    else:
-        all_times["normalised_additional_average"] = (
-            all_times["additional_average"] - all_times["additional_average"].min()
-        ) / (
-            all_times["additional_average"].max()
-            - all_times["additional_average"].min()
-        )
-        all_times["normalised_reeval_additional_average"] = (
-            all_times["reeval_additional_average"]
-            - all_times["reeval_additional_average"].min()
-        ) / (
-            all_times["reeval_additional_average"].max()
-            - all_times["reeval_additional_average"].min()
-        )
-        all_times["complement_additional_average"] = (
-            1 - all_times["normalised_additional_average"]
-        )
-        all_times["complement_reeval_additional_average"] = (
-            1 - all_times["normalised_reeval_additional_average"]
-        )
+            all_finals["complement_reeval_additional_average"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(lambda g: 1 - g["normalised_reeval_additional_average"])
+            all_finals["reeval_additional_reproducibility_score"] = all_finals.groupby(
+                "env", group_keys=False
+            ).apply(
+                lambda g: g["reeval_coverage"]
+                * g["complement_reeval_additional_average"]
+            )
+
+        else:
+            # Average
+            all_finals["normalised_additional_average"] = (
+                all_finals["additional_average"]
+                - all_finals["additional_average"].min()
+            ) / (
+                all_finals["additional_average"].max()
+                - all_finals["additional_average"].min()
+            )
+            all_finals["complement_additional_average"] = (
+                1 - all_finals["normalised_additional_average"]
+            )
+            all_finals["additional_reproducibility_score"] = (
+                all_finals["coverage"] * all_finals["complement_additional_average"]
+            )
+
+            # Reeval Average
+            all_finals["normalised_reeval_additional_average"] = (
+                all_finals["reeval_additional_average"]
+                - all_finals["reeval_additional_average"].min()
+            ) / (
+                all_finals["reeval_additional_average"].max()
+                - all_finals["reeval_additional_average"].min()
+            )
+            all_finals["complement_reeval_additional_average"] = (
+                1 - all_finals["normalised_reeval_additional_average"]
+            )
+            all_finals["reeval_additional_reproducibility_score"] = (
+                all_finals["reeval_coverage"]
+                * all_finals["complement_reeval_additional_average"]
+            )
 
     print("Time to take complement of all additional:", time.time() - start_t)
     start_t = time.time()
 
     # try:
     #    # Uniformise time values across replications
-    #    all_data = uniformise_xaxis(all_data, "time")
+    #    all_convergence = uniformise_xaxis(all_convergence, "time")
     # except Exception:
     #    print("\n!!!WARNING!!! Could not uniformise the time values across reps.")
     #    traceback.print_exc()
@@ -562,281 +797,52 @@ def load_results(
     print("\n!!!WARNING!!! Not doing the time uniformisation to save some time.")
 
     # Sort datas
-    all_data = sort_data(all_data, ["algo", "rep", "eval"], order)
-    all_losses = sort_data(all_losses, ["algo", "rep", compare_size], order)
+    all_convergence = sort_data(all_convergence, ["algo", "rep", "eval"], order)
+    all_finals = sort_data(all_finals, ["algo", "rep", compare_size], order)
     all_times = sort_data(all_times, ["algo", "rep", compare_size], order)
     all_var = sort_data(all_var, ["algo", "rep", compare_size], order)
 
     # Save datas as csv
-    all_data.to_csv(file_name_data, index=None)
-    all_losses.to_csv(file_name_losses, index=None)
+    all_convergence.to_csv(file_name_convergence, index=None)
+    all_finals.to_csv(file_name_finals, index=None)
     all_times.to_csv(file_name_times, index=None)
     all_var.to_csv(file_name_var, index=None)
 
-    return config_frame, all_data, all_losses, all_times, all_var
-
-
-#################################
-# Metrics computation functions #
-
-
-def compute_loss(
-    name: str,
-    data: pd.DataFrame,
-    losses: Dict[str, List[float]],
-    prefixe: str = "",
-) -> Dict[str, List[float]]:
-    max_eval = max(data["eval"])
-    original = data[data["eval"] == max_eval][prefixe + name].values[0]
-    losses[prefixe + name] = [original]
-    average = data[data["eval"] == max_eval][prefixe + "reeval_" + name].values[0]
-    fit_average = data[data["eval"] == max_eval][prefixe + "fit_reeval_" + name].values[
-        0
-    ]
-    desc_average = data[data["eval"] == max_eval][
-        prefixe + "desc_reeval_" + name
-    ].values[0]
-    losses[prefixe + "reeval_" + name] = [average]
-    losses[prefixe + "fit_reeval_" + name] = [fit_average]
-    losses[prefixe + "desc_reeval_" + name] = [desc_average]
-    if original == 0.0 or original == -jnp.inf:
-        if average == 0.0:
-            losses["loss_" + prefixe + "reeval_" + name] = [0]
-        else:
-            losses["loss_" + prefixe + "reeval_" + name] = [100]
-        if fit_average == 0:
-            losses["loss_" + prefixe + "fit_reeval_" + name] = [0]
-        else:
-            losses["loss_" + prefixe + "fit_reeval_" + name] = [100]
-        if desc_average == 0:
-            losses["loss_" + prefixe + "desc_reeval_" + name] = [0]
-        else:
-            losses["loss_" + prefixe + "desc_reeval_" + name] = [100]
-    else:
-        losses["loss_" + prefixe + "reeval_" + name] = [
-            (original - average) / original * 100
-        ]
-        losses["loss_" + prefixe + "fit_reeval_" + name] = [
-            (original - fit_average) / original * 100
-        ]
-        losses["loss_" + prefixe + "desc_reeval_" + name] = [
-            (original - desc_average) / original * 100
-        ]
-    return losses
-
-
-def compute_time(
-    data: pd.DataFrame,
-    env_name: str,
-    algo: str,
-    size: int,
-    times: Dict[str, List[float]],
-    pourcent: float = 0.95,
-    prefixe: str = "",
-    pourcent_value: bool = False,
-) -> Dict[str, List[float]]:
-    """
-    Return time to first stricly reach pourcent % of final QD-Score value for one
-    replication of one given algorithm on one given task.
-
-    Args:
-        data: dataframe for one replication of one algo to extract value from.
-        times: time dictionary to complement for this replication
-        poucent: pourcent use
-        prefixe: if qd_score column name requires a prefixe
-
-    Returns:
-        new complemented time dictionary
-    """
-
-    # Handle Arm as a specific case
-    # The compilation is usually longer than the actual run
-    # So time comparison is just going to be compilation difference
-    # As Parallel-Adaptive-Sampling is the only non-jitted approach
-    # It suffers from this difference.
-    offset_time = 0
-    if "arm" in env_name and "Parallel" in algo:
-        if size == 256:
-            offset_time = 80
-        elif size == 1024:
-            offset_time = 36
-        elif size == 4096:
-            offset_time = 14
-        elif size == 16384:
-            offset_time = 4
-        """
-        # Offset the time from the three first points
-        min_eval = data["eval"].drop_duplicates().nsmallest(1).iloc[-1]
-        offset_time = data[data["eval"] == min_eval]["time"].values[0]
-        data = data[data["eval"] > min_eval]
-        """
-
-    # Get final value of QD-Score
-    max_eval = max(data["eval"])
-    final_line = data[data["eval"] == max_eval]
-    final_value = final_line[prefixe + "qd_score"].values[0]
-
-    # Finding pourcent % value
-    pourcent_value = (
-        (pourcent * final_value)
-        if (final_value > 0)
-        else (2.0 - pourcent * final_value)
-    )
-    if pourcent == 1:
-        pourcent_epoch = max(data["epoch"].values)
-    else:
-        min_epoch = data["epoch"].drop_duplicates().nsmallest(2).iloc[-1]
-        if data[data[prefixe + "qd_score"] > pourcent_value]["epoch"].empty:
-            pourcent_epoch = min_epoch
-        else:
-            pourcent_epoch = max(
-                min_epoch,
-                min(data[data[prefixe + "qd_score"] > pourcent_value]["epoch"].values),
-            )
-    pourcent_line = data[data["epoch"] == pourcent_epoch]
-
-    # Finding corresponding eval, gen, time
-    times[prefixe + "epoch"] = pourcent_epoch
-    times[prefixe + "eval"] = pourcent_line["eval"].values[0]
-    times[prefixe + "time"] = pourcent_line["time"].values[0] - offset_time
-
-    # Setting all values
-    if pourcent_value:
-        line = pourcent_line
-    else:
-        line = final_line
-
-    values_to_get = [
-        prefixe + "qd_score",
-        prefixe + "coverage",
-        prefixe + "max_fitness",
-        prefixe + "reeval_qd_score",
-        prefixe + "reeval_coverage",
-        prefixe + "reeval_min_fitness",
-        prefixe + "reeval_max_fitness",
-        prefixe + "fit_reeval_qd_score",
-        prefixe + "fit_reeval_coverage",
-        prefixe + "fit_reeval_min_fitness",
-        prefixe + "fit_reeval_max_fitness",
-        prefixe + "desc_reeval_qd_score",
-        prefixe + "desc_reeval_coverage",
-        prefixe + "desc_reeval_min_fitness",
-        prefixe + "desc_reeval_max_fitness",
-        prefixe + "additional_qd_score",
-        prefixe + "additional_coverage",
-        prefixe + "additional_min_fitness",
-        prefixe + "additional_max_fitness",
-        prefixe + "reeval_additional_qd_score",
-        prefixe + "reeval_additional_coverage",
-        prefixe + "reeval_additional_min_fitness",
-        prefixe + "reeval_additional_max_fitness",
-    ]
-
-    for value in values_to_get:
-        if value in line.columns:
-            times[value] = line[value].values[0]
-        else:
-            times[value] = 0.0
-
-    # Add the average value as well
-    times[prefixe + "additional_average"] = times[prefixe + "additional_qd_score"] / (
-        line["num_centroids"].values[0] * line[prefixe + "coverage"].values[0] / 100
-    )
-    times[prefixe + "reeval_additional_average"] = times[
-        prefixe + "reeval_additional_qd_score"
-    ] / (
-        line["num_centroids"].values[0]
-        * line[prefixe + "reeval_coverage"].values[0]
-        / 100
-    )
-
-    return times
-
-
-def compute_var(
-    data: pd.DataFrame,
-    var: Dict[str, List[float]],
-    num_centroids: int,
-    prefixe: str = "",
-) -> Dict[str, List[float]]:
-    """
-    Return final variance value for one replication of one given algorithm on
-    one given task.
-
-    Args:
-        data: dataframe for one replication of one algo to extract value from.
-        var: var dictionary to complement for this replication
-        num_centroids: used to compute average variance
-        prefixe: if qd_score columns name requires a prefixe
-
-    Returns:
-        new complemented var dictionary
-    """
-
-    # Get final value of Variances
-    max_eval = max(data["eval"])
-    final_fit_var_value = data[data["eval"] == max_eval][
-        prefixe + "fit_var_qd_score"
-    ].values[0]
-    final_desc_var_value = data[data["eval"] == max_eval][
-        prefixe + "desc_var_qd_score"
-    ].values[0]
-    coverage = data[data["eval"] == max_eval][prefixe + "coverage"].values[0]
-    if coverage == 0:
-        average_fit_var_value = 0.0
-        average_desc_var_value = 0.0
-    else:
-        average_fit_var_value = final_fit_var_value / (coverage / 100 * num_centroids)
-        average_desc_var_value = final_desc_var_value / (coverage / 100 * num_centroids)
-
-    # Fill in Dict
-    var[prefixe + "fit_var_qd_score"] = final_fit_var_value  # type: ignore
-    var[prefixe + "desc_var_qd_score"] = final_desc_var_value  # type: ignore
-    var[prefixe + "avg_fit_var_qd_score"] = average_fit_var_value  # type: ignore
-    var[prefixe + "avg_desc_var_qd_score"] = average_desc_var_value  # type: ignore
-    return var  # type: ignore
+    return config_frame, all_convergence, all_finals, all_times, all_var
 
 
 ###########################
 # Data handling functions #
 
 
-def extract_algo(data: pd.DataFrame, algos: str, columns: List) -> pd.DataFrame:
-    sub_data = data[data["algo"].str.contains(algos)].reset_index(drop=True)
-    if sub_data.empty:
-        return sub_data
-    sub_data = sub_data.sort_values(columns, key=natsort_keygen(), ignore_index=True)
-    return sub_data
+def sort_data(data: pd.DataFrame, columns: list, order: list) -> pd.DataFrame:
+    """
+    Sort the Pandas DataFrame "data" that contains an "algo" columns, so
+    that the "algo" column follows the inputed "order" and the rest of the
+    columns are sorted following the order inputed in "columns".
+    """
 
+    # Initialize an empty list to store the sorted DataFrames for each algorithm
+    sorted_data = []
 
-def extract_nonalgo(data: pd.DataFrame, algos: str, columns: List) -> pd.DataFrame:
-    sub_data = data[~data["algo"].str.contains(algos)].reset_index(drop=True)
-    if sub_data.empty:
-        return sub_data
-    sub_data = sub_data.sort_values(columns, key=natsort_keygen(), ignore_index=True)
-    return sub_data
-
-
-def sort_data(
-    data: pd.DataFrame,
-    columns: List,
-    order: List,
-) -> pd.DataFrame:
-    final_data = extract_algo(data, order[0], columns=columns)
-    left_data = extract_nonalgo(data, order[0], columns=columns)
-    added_names = order[0]
-    for i in range(1, len(order)):
-        final_data = pd.concat(
-            [
-                final_data,
-                extract_algo(left_data, order[i], columns=columns),
-            ],
-            ignore_index=True,
+    # Process each algorithm in the order list
+    for algo in order:
+        # Filter data for the current algorithm and sort it
+        algo_data = data[data["algo"].str.contains(algo, regex=False)].sort_values(
+            columns, key=natsort_keygen(), ignore_index=True
         )
-        added_names += "|" + order[i]
-        left_data = extract_nonalgo(data, added_names, columns=columns)
-    final_data = pd.concat([final_data, left_data], ignore_index=True)
-    return final_data
+        sorted_data.append(algo_data)
+
+        # Remove rows that contain the current algorithm from the data for future iterations
+        data = data[~data["algo"].str.contains(algo, regex=False)]
+
+    # Finally, add the remaining rows (non-matching any algorithm in 'order')
+    sorted_data.append(
+        data.sort_values(columns, key=natsort_keygen(), ignore_index=True)
+    )
+
+    # Concatenate the sorted DataFrames
+    return pd.concat(sorted_data, ignore_index=True)
 
 
 def uniformise_xaxis(data: pd.DataFrame, xaxis: str) -> pd.DataFrame:

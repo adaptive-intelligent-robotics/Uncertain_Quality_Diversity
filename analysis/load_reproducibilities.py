@@ -12,10 +12,10 @@ from qdax.core.containers.mapelites_repertoire import (
     compute_cvt_centroids,
     get_cells_indices,
 )
-from qdax.utils.plotting import plot_2d_map_elites_repertoire
 
 from analysis.load_archives import get_folder_name
 from analysis.load_results import sort_data
+from analysis.utils_archive import plot_one_paper_archive
 
 
 def load_reproducibilities(
@@ -23,46 +23,43 @@ def load_reproducibilities(
     config_frame: pd.DataFrame,
     compare_size: str,
     order: List,
+    reproducibility_fix: bool,
     prefixe: str = "",
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Note: during thesis writting, realised that the computation of reeval reproducibility
+    was incorrect, to avoid breaking results from paper, added an option for the fix as a
+    boolean, reproducibility_fix.
+    """
 
     main_folder_name = f"{plot_folder}_{prefixe}reproducibility_repertoires/"
 
     # If already an min_max_frame file in the folder, use it
     file_name_all_reproducibilities_data = (
-        f"{plot_folder}_csv/all_reproducibilities_data.csv"
+        f"{plot_folder}_csv/{prefixe}all_reproducibilities_data.csv"
     )
-    file_name_reprod_repertoire_folders = (
-        f"{plot_folder}_csv/reprod_repertoire_folders.csv"
+    file_name_reprod_min_max_frame = (
+        f"{plot_folder}_csv/{prefixe}reprod_min_max_frame.csv"
     )
-    file_name_reprod_min_max_frame = f"{plot_folder}_csv/reprod_min_max_frame.csv"
-    if (
-        os.path.exists(file_name_all_reproducibilities_data)
-        and os.path.exists(file_name_reprod_repertoire_folders)
-        and os.path.exists(file_name_reprod_min_max_frame)
+    if os.path.exists(file_name_all_reproducibilities_data) and os.path.exists(
+        file_name_reprod_min_max_frame
     ):
         print("Loading existing plot archive reproducibility paper datas in:")
         print(file_name_all_reproducibilities_data)
-        print(file_name_reprod_repertoire_folders)
         print(file_name_reprod_min_max_frame)
         all_reproducibilities_data = pd.read_csv(
             file_name_all_reproducibilities_data, header=0, index_col=False
-        )
-        reprod_repertoire_folders = pd.read_csv(
-            file_name_reprod_repertoire_folders, header=0, index_col=False
         )
         reprod_min_max_frame = pd.read_csv(
             file_name_reprod_min_max_frame, header=0, index_col=False
         )
         return (
             all_reproducibilities_data,
-            reprod_repertoire_folders,
             reprod_min_max_frame,
         )
 
     # If not, create it and populate it
     all_reproducibilities_data = pd.DataFrame()
-    reprod_repertoire_folders = pd.DataFrame()
     reprod_min_max_frame = pd.DataFrame()
 
     # Go through each env
@@ -75,10 +72,16 @@ def load_reproducibilities(
         )
 
         # Get parameters for env
-        min_bd_list = str(env_config_frame["min_bd"][0])[1:-1].split(" ")
+        if "_" in env_config_frame["min_bd"][0]:
+            min_bd_list = str(env_config_frame["min_bd"][0]).split("_")
+        else:
+            min_bd_list = str(env_config_frame["min_bd"][0])[1:-1].split(" ")
         if "" in min_bd_list:
             min_bd_list.remove("")
-        max_bd_list = str(env_config_frame["max_bd"][0])[1:-1].split(" ")
+        if "_" in env_config_frame["max_bd"][0]:
+            max_bd_list = str(env_config_frame["max_bd"][0]).split("_")
+        else:
+            max_bd_list = str(env_config_frame["max_bd"][0])[1:-1].split(" ")
         if "" in max_bd_list:
             max_bd_list.remove("")
         min_bd = [float(bd) for bd in min_bd_list]
@@ -114,9 +117,11 @@ def load_reproducibilities(
         )
 
         # Opening all archives
+        print("      First, opening all archives for normalisation.")
         initialised = False
         for line in range(env_config_frame.shape[0]):
 
+            # Loading var repertoires
             try:
                 fit_var_repertoire_folder = get_folder_name(
                     env_config_frame,
@@ -155,6 +160,142 @@ def load_reproducibilities(
                 traceback.print_exc()
                 continue
 
+            # Loading reeval var repertoires
+            reeval_require_compute = False
+            try:
+                reeval_fit_var_repertoire_folder = get_folder_name(
+                    env_config_frame,
+                    f"{prefixe}reeval_fit_var_repertoire_folder",
+                    line,
+                )
+                reeval_desc_var_repertoire_folder = get_folder_name(
+                    env_config_frame,
+                    f"{prefixe}reeval_desc_var_repertoire_folder",
+                    line,
+                )
+
+                # Open reeval_fit_var repertoire
+                reeval_fit_var_centroids = jnp.load(
+                    os.path.join(reeval_fit_var_repertoire_folder, "centroids.npy")
+                )
+                reeval_fit_var_genotypes = jnp.load(
+                    os.path.join(reeval_fit_var_repertoire_folder, "genotypes.npy")
+                )
+                reeval_fit_var_fitnesses = jnp.load(
+                    os.path.join(reeval_fit_var_repertoire_folder, "fitnesses.npy")
+                )
+                reeval_fit_var_descriptors = jnp.load(
+                    os.path.join(reeval_fit_var_repertoire_folder, "descriptors.npy")
+                )
+
+                # Open reeval_desc_var repertoire
+                reeval_desc_var_centroids = jnp.load(
+                    os.path.join(reeval_desc_var_repertoire_folder, "centroids.npy")
+                )
+                reeval_desc_var_genotypes = jnp.load(
+                    os.path.join(reeval_desc_var_repertoire_folder, "genotypes.npy")
+                )
+                reeval_desc_var_fitnesses = jnp.load(
+                    os.path.join(reeval_desc_var_repertoire_folder, "fitnesses.npy")
+                )
+                reeval_desc_var_descriptors = jnp.load(
+                    os.path.join(reeval_desc_var_repertoire_folder, "descriptors.npy")
+                )
+
+            except Exception:
+                print(
+                    "\n!!!WARNING!!! Cannot open reeval var repertoire of line",
+                    line,
+                )
+                print(
+                    "Attempting to re-create them, this process might lead to memory overflow."
+                )
+                reeval_require_compute = True
+                traceback.print_exc()
+
+            # Recomputing reeval var repertoire if required
+            # This code only exist because of old data from the original UQD paper
+            if reeval_require_compute:
+                try:
+                    reeval_repertoire_folder = get_folder_name(
+                        env_config_frame,
+                        f"{prefixe}reeval_repertoire_folder",
+                        line,
+                    )
+
+                    # Open reeval_repertoire to build fit_var_reeval and desc_var_reeval
+                    reeval_centroids = jnp.load(
+                        os.path.join(reeval_repertoire_folder, "centroids.npy")
+                    )
+                    reeval_genotypes = jnp.load(
+                        os.path.join(reeval_repertoire_folder, "genotypes.npy")
+                    )
+                    reeval_fitnesses = jnp.load(
+                        os.path.join(reeval_repertoire_folder, "fitnesses.npy")
+                    )
+                    reeval_descriptors = jnp.load(
+                        os.path.join(reeval_repertoire_folder, "descriptors.npy")
+                    )
+
+                    # Build reeval fit and desc var
+                    num_centroids = reeval_genotypes.shape[0]
+                    num_bds = reeval_genotypes.shape[1]
+                    transformed_fit_var_genotypes = jnp.reshape(
+                        jnp.repeat(fit_var_genotypes, num_centroids, axis=0),
+                        (num_centroids, num_centroids, num_bds),
+                    )
+                    transformed_reeval_genotypes = jnp.reshape(
+                        jnp.repeat(
+                            jnp.expand_dims(reeval_genotypes, axis=0),
+                            num_centroids,
+                            axis=0,
+                        ),
+                        (num_centroids, num_centroids, num_bds),
+                    )
+                    tested = jnp.where(
+                        jnp.transpose(
+                            jnp.all(
+                                jnp.isclose(
+                                    transformed_fit_var_genotypes,
+                                    transformed_reeval_genotypes,
+                                    rtol=1e-02,
+                                    atol=1e-02,
+                                ),
+                                axis=2,
+                            )
+                        ),
+                        jnp.arange(1, num_centroids + 1, dtype=np.intc),
+                        0,
+                    )
+                    fit_var_added = jnp.nanmax(tested, axis=1) - 1
+                    fit_var_added = jnp.array(fit_var_added, dtype=np.intc)
+
+                    reeval_fit_var_fitnesses = jnp.where(
+                        reeval_fitnesses > -jnp.inf,
+                        fit_var_fitnesses.at[fit_var_added].get(),
+                        -jnp.inf,
+                    )
+                    reeval_desc_var_fitnesses = jnp.where(
+                        reeval_fitnesses > -jnp.inf,
+                        desc_var_fitnesses.at[fit_var_added].get(),
+                        -jnp.inf,
+                    )
+
+                    reeval_fit_var_genotypes = reeval_genotypes
+                    reeval_desc_var_genotypes = reeval_genotypes
+                    reeval_fit_var_descriptors = reeval_descriptors
+                    reeval_desc_var_descriptors = reeval_descriptors
+                    reeval_fit_var_centroids = reeval_centroids
+                    reeval_desc_var_centroids = reeval_centroids
+
+                except Exception:
+                    print(
+                        "\n!!!WARNING!!! Cannot recompute reeval var repertoire, giving up for this line."
+                    )
+                    traceback.print_exc()
+                    continue
+
+            # Saving min and max
             try:
                 # Create the archive
                 if not initialised:
@@ -169,6 +310,20 @@ def load_reproducibilities(
                         genotypes=desc_var_genotypes,
                         fitnesses=desc_var_fitnesses,
                         descriptors=desc_var_descriptors,
+                        centroids=centroids,
+                        extra_scores={},
+                    )
+                    max_reeval_fit_var_repertoire = MapElitesRepertoire.init(
+                        genotypes=reeval_fit_var_genotypes,
+                        fitnesses=reeval_fit_var_fitnesses,
+                        descriptors=reeval_fit_var_descriptors,
+                        centroids=centroids,
+                        extra_scores={},
+                    )
+                    max_reeval_desc_var_repertoire = MapElitesRepertoire.init(
+                        genotypes=reeval_desc_var_genotypes,
+                        fitnesses=reeval_desc_var_fitnesses,
+                        descriptors=reeval_desc_var_descriptors,
                         centroids=centroids,
                         extra_scores={},
                     )
@@ -188,6 +343,18 @@ def load_reproducibilities(
                         desc_var_fitnesses,
                         {},
                     )
+                    max_reeval_fit_var_repertoire = max_reeval_fit_var_repertoire.add(
+                        reeval_fit_var_genotypes,
+                        reeval_fit_var_descriptors,
+                        reeval_fit_var_fitnesses,
+                        {},
+                    )
+                    max_reeval_desc_var_repertoire = max_reeval_desc_var_repertoire.add(
+                        reeval_desc_var_genotypes,
+                        reeval_desc_var_descriptors,
+                        reeval_desc_var_fitnesses,
+                        {},
+                    )
             except Exception:
                 print("\n!!!WARNING!!! Cannot open repertoire of line", line)
                 traceback.print_exc()
@@ -203,6 +370,16 @@ def load_reproducibilities(
             main_folder_name=main_folder_name,
             sub_folder_name=f"{env}_max_desc_var_repertoire",
             repertoire=max_desc_var_repertoire,
+        )
+        save_single_archive(
+            main_folder_name=main_folder_name,
+            sub_folder_name=f"{env}_max_reeval_fit_var_repertoire",
+            repertoire=max_reeval_fit_var_repertoire,
+        )
+        save_single_archive(
+            main_folder_name=main_folder_name,
+            sub_folder_name=f"{env}_max_reeval_desc_var_repertoire",
+            repertoire=max_reeval_desc_var_repertoire,
         )
 
         # Plot the maximum var archives
@@ -223,6 +400,27 @@ def load_reproducibilities(
             descriptors=max_desc_var_repertoire.descriptors,
             min_bd=min_bd,
             max_bd=max_bd,
+        )
+        plot_single_archive(
+            file_name=f"{plot_folder}/{env}_max_reeval_fit_var_repertoire.png",
+            title=f"{env} - Maximum variances",
+            centroids=centroids,
+            fitnesses=max_reeval_fit_var_repertoire.fitnesses,
+            descriptors=max_reeval_fit_var_repertoire.descriptors,
+            min_bd=min_bd,
+            max_bd=max_bd,
+        )
+        plot_single_archive(
+            file_name=f"{plot_folder}/{env}_max_reeval_desc_var_repertoire.png",
+            title=f"{env} - Maximum variances",
+            centroids=centroids,
+            fitnesses=max_reeval_desc_var_repertoire.fitnesses,
+            descriptors=max_reeval_desc_var_repertoire.descriptors,
+            min_bd=min_bd,
+            max_bd=max_bd,
+        )
+        print(
+            "      Done opening files for normalisation, second computing reproducibility."
         )
 
         # Go again through all files to compute modified archive and new metrics
@@ -364,25 +562,42 @@ def load_reproducibilities(
                         reeval_require_compute = True
                         traceback.print_exc()
 
-                    # Create fit and desc reproducibilities repertoire
+                    # Normalise fit and desc var
                     fit_var_indices = get_cells_indices(fit_var_descriptors, centroids)
+                    matching_max_fit_var_repertoire = max_fit_var_repertoire.fitnesses[
+                        fit_var_indices
+                    ]
                     fit_reproducibilities = jnp.where(
-                        max_fit_var_repertoire.fitnesses[fit_var_indices] > -jnp.inf,
+                        matching_max_fit_var_repertoire == 0.0,
+                        0.0,
                         jnp.divide(
                             fit_var_fitnesses,
-                            max_fit_var_repertoire.fitnesses[fit_var_indices],
+                            matching_max_fit_var_repertoire,
                         ),
+                    )
+                    fit_reproducibilities = jnp.where(
+                        matching_max_fit_var_repertoire > -jnp.inf,
+                        fit_reproducibilities,
                         -jnp.inf,
                     )
+
                     desc_var_indices = get_cells_indices(
                         desc_var_descriptors, centroids
                     )
+                    matching_max_desc_var_repertoire = (
+                        max_desc_var_repertoire.fitnesses[desc_var_indices]
+                    )
                     desc_reproducibilities = jnp.where(
-                        max_desc_var_repertoire.fitnesses[desc_var_indices] > -jnp.inf,
+                        matching_max_desc_var_repertoire == 0.0,
+                        0.0,
                         jnp.divide(
                             desc_var_fitnesses,
-                            max_desc_var_repertoire.fitnesses[desc_var_indices],
+                            matching_max_desc_var_repertoire,
                         ),
+                    )
+                    desc_reproducibilities = jnp.where(
+                        matching_max_desc_var_repertoire > -jnp.inf,
+                        desc_reproducibilities,
                         -jnp.inf,
                     )
 
@@ -470,32 +685,62 @@ def load_reproducibilities(
                             traceback.print_exc()
                             continue
                     else:
+
+                        # Normalise reeval fit and desc var
+                        # (If recomputing already using normalised values)
                         reeval_fit_var_indices = get_cells_indices(
                             reeval_fit_var_descriptors, centroids
                         )
+                        if reproducibility_fix:
+                            matching_max_reeval_fit_var_repertoire = (
+                                max_reeval_fit_var_repertoire.fitnesses[
+                                    reeval_fit_var_indices
+                                ]
+                            )
+                        else:
+                            matching_max_reeval_fit_var_repertoire = (
+                                max_fit_var_repertoire.fitnesses[reeval_fit_var_indices]
+                            )
                         reeval_fit_reproducibilities = jnp.where(
-                            max_fit_var_repertoire.fitnesses[reeval_fit_var_indices]
-                            > -jnp.inf,
+                            matching_max_reeval_fit_var_repertoire == 0.0,
+                            0.0,
                             jnp.divide(
                                 reeval_fit_var_fitnesses,
-                                max_fit_var_repertoire.fitnesses[
-                                    reeval_fit_var_indices
-                                ],
+                                matching_max_reeval_fit_var_repertoire,
                             ),
+                        )
+                        reeval_fit_reproducibilities = jnp.where(
+                            matching_max_reeval_fit_var_repertoire > -jnp.inf,
+                            reeval_fit_reproducibilities,
                             -jnp.inf,
                         )
+
                         reeval_desc_var_indices = get_cells_indices(
                             reeval_desc_var_descriptors, centroids
                         )
-                        reeval_desc_reproducibilities = jnp.where(
-                            max_desc_var_repertoire.fitnesses[reeval_desc_var_indices]
-                            > -jnp.inf,
-                            jnp.divide(
-                                reeval_desc_var_fitnesses,
+                        if reproducibility_fix:
+                            matching_max_reeval_desc_var_repertoire = (
+                                max_reeval_desc_var_repertoire.fitnesses[
+                                    reeval_desc_var_indices
+                                ]
+                            )
+                        else:
+                            matching_max_reeval_desc_var_repertoire = (
                                 max_desc_var_repertoire.fitnesses[
                                     reeval_desc_var_indices
-                                ],
+                                ]
+                            )
+                        reeval_desc_reproducibilities = jnp.where(
+                            matching_max_reeval_desc_var_repertoire == 0.0,
+                            0.0,
+                            jnp.divide(
+                                reeval_desc_var_fitnesses,
+                                matching_max_reeval_desc_var_repertoire,
                             ),
+                        )
+                        reeval_desc_reproducibilities = jnp.where(
+                            matching_max_reeval_desc_var_repertoire > -jnp.inf,
+                            reeval_desc_reproducibilities,
                             -jnp.inf,
                         )
 
@@ -520,6 +765,64 @@ def load_reproducibilities(
                         reeval_desc_reproducibilities,
                     )
                     reeval_desc_reproducibilities = 1.0 - reeval_desc_reproducibilities
+
+                    if any(fit_reproducibilities < 0):
+                        print(
+                            f"!!!WARNING!!! Got out of range fit_reproducibilities: smaller than 0 {algo} {env}"
+                        )
+                        print(fit_reproducibilities[fit_reproducibilities < 0])
+                    if any(fit_reproducibilities > 1):
+                        print(
+                            f"!!!WARNING!!! Got out of range fit_reproducibilities: bigger than 1 {algo} {env}"
+                        )
+                        print(fit_reproducibilities[fit_reproducibilities > 1])
+                    if any(reeval_fit_reproducibilities < 0):
+                        print(
+                            f"!!!WARNING!!! Got out of range reeval_fit_reproducibilities: smaller than 0 {algo} {env}"
+                        )
+                        print(
+                            reeval_fit_reproducibilities[
+                                reeval_fit_reproducibilities < 0
+                            ]
+                        )
+                    if any(reeval_fit_reproducibilities > 1):
+                        print(
+                            f"!!!WARNING!!! Got out of range reeval_fit_reproducibilities: bigger than 1 {algo} {env}"
+                        )
+                        print(
+                            reeval_fit_reproducibilities[
+                                reeval_fit_reproducibilities > 1
+                            ]
+                        )
+
+                    if any(desc_reproducibilities < 0):
+                        print(
+                            f"!!!WARNING!!! Got out of range desc_reproducibilities: smaller than 0 {algo} {env}"
+                        )
+                        print(desc_reproducibilities[desc_reproducibilities < 0])
+                    if any(desc_reproducibilities > 1):
+                        print(
+                            f"!!!WARNING!!! Got out of range desc_reproducibilities: bigger than 1 {algo} {env}"
+                        )
+                        print(desc_reproducibilities[desc_reproducibilities > 1])
+                    if any(reeval_desc_reproducibilities < 0):
+                        print(
+                            f"!!!WARNING!!! Got out of range reeval_desc_reproducibilities: smaller than 0 {algo} {env}"
+                        )
+                        print(
+                            reeval_desc_reproducibilities[
+                                reeval_desc_reproducibilities < 0
+                            ]
+                        )
+                    if any(reeval_desc_reproducibilities > 1):
+                        print(
+                            f"!!!WARNING!!! Got out of range reeval_desc_reproducibilities: bigger than 1 {algo} {env}"
+                        )
+                        print(
+                            reeval_desc_reproducibilities[
+                                reeval_desc_reproducibilities > 1
+                            ]
+                        )
 
                     # Write one of the repertoire for later ploting
                     if not written:
@@ -556,60 +859,39 @@ def load_reproducibilities(
                                 extra_scores={},
                             )
                         )
+                        # plot_single_archive(
+                        #    file_name=f"{plot_folder}/{env}_{algo}_test.png",
+                        #    title=f"{env} - {algo}",
+                        #    centroids=reeval_desc_reproducibilities_repertoire.centroids,
+                        #    fitnesses=reeval_desc_reproducibilities_repertoire.fitnesses,
+                        #    descriptors=reeval_desc_reproducibilities_repertoire.descriptors,
+                        #    min_bd=min_bd,
+                        #    max_bd=max_bd,
+                        # )
 
                         algo_name = algo.replace(" ", "_")
                         fit_reproducibilities_folder_name = save_single_archive(
                             main_folder_name=main_folder_name,
-                            sub_folder_name=f"{env}_{algo_name}_{size}_fit_reproducibilities_repertoire",
+                            sub_folder_name=f"{env}_{algo_name}_{size}_{prefixe}fit_reproducibilities_repertoire",
                             repertoire=fit_reproducibilities_repertoire,
                         )
                         desc_reproducibilities_folder_name = save_single_archive(
                             main_folder_name=main_folder_name,
-                            sub_folder_name=f"{env}_{algo_name}_{size}_desc_reproducibilities_repertoire",
+                            sub_folder_name=f"{env}_{algo_name}_{size}_{prefixe}desc_reproducibilities_repertoire",
                             repertoire=desc_reproducibilities_repertoire,
                         )
                         reeval_fit_reproducibilities_folder_name = save_single_archive(
                             main_folder_name=main_folder_name,
-                            sub_folder_name=f"{env}_{algo_name}_{size}_reeval_fit_reproducibilities_repertoire",
+                            sub_folder_name=f"{env}_{algo_name}_{size}_{prefixe}reeval_fit_reproducibilities_repertoire",
                             repertoire=reeval_fit_reproducibilities_repertoire,
                         )
                         reeval_desc_reproducibilities_folder_name = save_single_archive(
                             main_folder_name=main_folder_name,
-                            sub_folder_name=f"{env}_{algo_name}_{size}_reeval_desc_reproducibilities_repertoire",
+                            sub_folder_name=f"{env}_{algo_name}_{size}_{prefixe}reeval_desc_reproducibilities_repertoire",
                             repertoire=reeval_desc_reproducibilities_repertoire,
                         )
 
-                        # Update frame
-                        reprod_repertoire_folders = pd.concat(
-                            [
-                                reprod_repertoire_folders,
-                                pd.DataFrame.from_dict(
-                                    {
-                                        "env": [env],
-                                        "algo": [algo],
-                                        compare_size: [size],
-                                        f"{prefixe}fit_reproducibilities_repertoire_folder": [
-                                            fit_reproducibilities_folder_name
-                                        ],
-                                        f"{prefixe}desc_reproducibilities_repertoire_folder": [
-                                            desc_reproducibilities_folder_name
-                                        ],
-                                        f"{prefixe}reeval_fit_reproducibilities_repertoire_folder": [
-                                            reeval_fit_reproducibilities_folder_name
-                                        ],
-                                        f"{prefixe}reeval_desc_reproducibilities_repertoire_folder": [
-                                            reeval_desc_reproducibilities_folder_name
-                                        ],
-                                    }
-                                ),
-                            ],
-                            ignore_index=True,
-                        )
-                        reprod_repertoire_folders = sort_data(
-                            reprod_repertoire_folders,
-                            ["env", "algo", compare_size],
-                            order,
-                        )
+                        written = True
 
                     # Compute new metrics
                     reprod_data: Dict[str, List[float]] = {}
@@ -651,11 +933,12 @@ def load_reproducibilities(
                         ignore_index=True,
                     )
 
+        print("      Done computing reproducibility.")
+
     all_reproducibilities_data.to_csv(file_name_all_reproducibilities_data, index=None)
-    reprod_repertoire_folders.to_csv(file_name_reprod_repertoire_folders, index=None)
     reprod_min_max_frame.to_csv(file_name_reprod_min_max_frame, index=None)
 
-    return all_reproducibilities_data, reprod_repertoire_folders, reprod_min_max_frame
+    return all_reproducibilities_data, reprod_min_max_frame
 
 
 def save_single_archive(
@@ -696,15 +979,16 @@ def plot_single_archive(
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(70, 8), sharey=True)
 
         # Print
-        _, _ = plot_2d_map_elites_repertoire(
+        plot_one_paper_archive(
             centroids=centroids,
-            repertoire_fitnesses=fitnesses,
+            descriptors=descriptors,
+            fitnesses=fitnesses,
+            ax=ax,
             minval=min_bd,
             maxval=max_bd,
             vmin=min_fitness,
             vmax=max_fitness,
-            repertoire_descriptors=descriptors,
-            ax=ax,
+            colorbar=True,
         )
 
         # Add title
